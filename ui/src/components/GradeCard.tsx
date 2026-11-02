@@ -1,23 +1,83 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { ActionMix, DecisionGrade } from '../api/types'
-import { pct } from '../api/client'
+import { pct, postJson } from '../api/client'
 import { CardText } from './PlayingCard'
 import { actionColor } from './RangeGrid'
 import { LinkTerms, Term } from './Term'
 import './grade.css'
 
-let explanationsEnabled: Promise<boolean> | null = null
-function useExplanationsEnabled() {
-  const [on, setOn] = useState<boolean | null>(null)
+type Via = 'claude-cli' | 'api' | 'none'
+let explanationsVia: Promise<Via> | null = null
+/** Which backend writes explanations: the claude CLI (subscription), the API, or none. */
+export function useExplanationsVia() {
+  const [via, setVia] = useState<Via | null>(null)
   useEffect(() => {
-    explanationsEnabled ??= fetch('/api/health')
+    explanationsVia ??= fetch('/api/health')
       .then((r) => r.json())
-      .then((h) => Boolean(h.explanations))
-      .catch(() => false)
-    explanationsEnabled.then(setOn)
+      .then((h) => (h.explanations_via ?? (h.explanations ? 'api' : 'none')) as Via)
+      .catch(() => 'none' as Via)
+    explanationsVia.then(setVia)
   }, [])
-  return on
+  return via
+}
+
+export function Thinking({ label = 'Coach is thinking' }: { label?: string }) {
+  return (
+    <span className="thinking-dots">
+      {label}
+      <i />
+      <i />
+      <i />
+    </span>
+  )
+}
+
+/** The prose explanation, with its loading, error and on-demand states. */
+function Explanation({ g }: { g: DecisionGrade }) {
+  const via = useExplanationsVia()
+  const [text, setText] = useState<string | null>(g.explanation)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(g.explanation_error ?? null)
+  useEffect(() => {
+    setText(g.explanation)
+    setErr(g.explanation_error ?? null)
+  }, [g.explanation, g.explanation_error])
+  const request = async () => {
+    setBusy(true)
+    setErr(null)
+    try {
+      const r = await postJson<{ text: string }>(`/api/hands/${g.hand_id}/explain`, { index: g.index })
+      setText(r.text)
+    } catch (e) {
+      setErr(String(e).replace(/^Error: \d+ /, ''))
+    }
+    setBusy(false)
+  }
+  if (text)
+    return (
+      <p className="explanation">
+        <LinkTerms text={text} />
+      </p>
+    )
+  if (busy || (g.explanation_status === 'pending' && !err))
+    return (
+      <p className="explanation thinking">
+        <Thinking />
+      </p>
+    )
+  if (via === 'none')
+    return <p className="faint small">No explanation backend: log in to the claude CLI (uses your Claude subscription) or add ANTHROPIC_API_KEY to .env. The facts below still apply.</p>
+  return (
+    <p className="small row">
+      {err && <span className="pill-bad">Explanation failed: {err}</span>}
+      {via !== null && (
+        <button className="ghost small" onClick={request}>
+          {err ? 'Retry' : 'Explain this decision'}
+        </button>
+      )}
+    </p>
+  )
 }
 
 export const GRADE_COLORS: Record<string, string> = {
@@ -66,7 +126,6 @@ function MixTable({ actions, chosen, showEv }: { actions: ActionMix[]; chosen?: 
 
 export function GradeCard({ g, compact = false }: { g: DecisionGrade; compact?: boolean }) {
   const [open, setOpen] = useState(!compact)
-  const explanations = useExplanationsEnabled()
   const f = g.facts
   const showEv = g.kind === 'solver'
   return (
@@ -99,16 +158,44 @@ export function GradeCard({ g, compact = false }: { g: DecisionGrade; compact?: 
             )}
           </div>
           {g.actions.length > 0 && <MixTable actions={g.actions} chosen={g.chosen} showEv={showEv} />}
-          {g.explanation ? (
-            <p className="explanation">
-              <LinkTerms text={g.explanation} />
-            </p>
-          ) : (
-            <p className="faint small">
-              {explanations === false ? 'Add ANTHROPIC_API_KEY to .env for plain-English explanations.' : 'Explanation pending…'}
-            </p>
+          {g.off_chart && (
+            <div className="offchart">
+              <b>Off-chart:</b> {g.off_chart.action} is 0% in the chart — the chart says <b>{g.off_chart.chart}</b>.
+              {g.off_chart.leaves_chart && <div className="small">This takes the hand off the chart tree, so the rest of this hand gets pot odds and equity against estimated ranges instead of solver grades.</div>}
+            </div>
           )}
-          {g.note && <p className="note">{g.note}</p>}
+          {g.kind === 'unsolved' && f && (
+            <div className="unsolved">
+              <div className="small">
+                <b>Why no grade:</b> {g.unsolved_reason ?? g.note}
+              </div>
+              <div className="fact-strip">
+                {f.pot_odds_needed !== null && (
+                  <span>
+                    <Term id="pot-odds">Pot odds</Term>: need <b>{pct(f.pot_odds_needed, 1)}</b>
+                  </span>
+                )}
+                {f.equity_vs_range !== null && (
+                  <span>
+                    <Term id="equity">Equity</Term> vs estimated range: <b>{pct(f.equity_vs_range, 1)}</b>
+                  </span>
+                )}
+                <span>
+                  <Term id="spr">SPR</Term> {f.spr}
+                </span>
+                <span>{f.hand_description}</span>
+              </div>
+              {f.pot_odds_needed !== null && f.equity_vs_range !== null && (
+                <div className="small muted">
+                  {f.equity_vs_range >= f.pot_odds_needed
+                    ? 'Your equity is above what the price requires (before considering how much of it you realize).'
+                    : 'Your equity is below what the price requires, so calling needs implied odds or fold equity to make up the gap.'}
+                </div>
+              )}
+            </div>
+          )}
+          <Explanation g={g} />
+          {g.note && g.kind !== 'unsolved' && <p className="note">{g.note}</p>}
           {g.exploit && (
             <div className="exploit">
               <div className="exploit-title">
@@ -119,7 +206,7 @@ export function GradeCard({ g, compact = false }: { g: DecisionGrade; compact?: 
             </div>
           )}
           {f && (
-            <details className="facts">
+            <details className="facts" open={g.kind === 'unsolved'}>
               <summary>Fact sheet</summary>
               <div className="facts-grid">
                 <span>Hand</span>

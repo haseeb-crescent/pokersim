@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
 
     let res = Arc::new(Resources::load(root.clone())?);
     let db = Arc::new(db::Db::open(&root.join("data/trainer.sqlite"))?);
-    let llm = llm::Llm::from_env().map(Arc::new);
+    let llm = llm::Llm::detect().await.map(Arc::new);
     let (tx, _) = tokio::sync::broadcast::channel(512);
     let app: App = Arc::new(AppState { res, db, llm, table: Mutex::new(None), tx, sims: Mutex::new(HashMap::new()), lab_solves: Mutex::new(HashMap::new()) });
 
@@ -39,7 +39,13 @@ async fn main() -> anyhow::Result<()> {
     println!("Solver Trainer");
     println!("  charts: {} nodes ({})", app.res.charts.nodes.len(), app.res.charts.meta.method);
     println!("  solve cache: {n} solves, {:.1} MB", bytes as f64 / 1e6);
-    println!("  explanations: {}", if app.llm.is_some() { format!("Claude ({})", llm::MODEL) } else { "off (set ANTHROPIC_API_KEY in .env)".into() });
+    println!(
+        "  explanations: {}",
+        match &app.llm {
+            Some(l) => l.describe(),
+            None => "off (log in to the claude CLI, or set ANTHROPIC_API_KEY in .env)".into(),
+        }
+    );
     let addr = format!("127.0.0.1:{port}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     let url = format!("http://{addr}");
