@@ -79,6 +79,40 @@ Compared with published solver outputs for similar rake, the opening ranges are 
 These matter less than they look for grading: preflop decisions are graded by chart frequency
 and labelled as such, and every postflop grade comes from postflop-solver on the actual board.
 
+## Charts at other stack depths (Session mode)
+
+`cargo run --release -p strategy --bin build_depth_charts` (in `crates/strategy/src/bin/build_depth_charts.rs`)
+solves the same abstract game at 40, 60, 150 and 200bb and writes `data/preflop/charts_<N>bb.json`.
+The server loads every such file and gives each player the chart nearest its effective stack,
+by ratio. The coach notes when a grade used a non-100bb chart.
+
+- **What changes with depth**: the tree. Short stacks reach all-in sooner: from the third raise
+  on, a raise to more than 42% of the stack becomes a jam. Deeper than 100bb, the 5-bet is a
+  normal raise (2.3x) rather than all-in, and all-in comes one raise later.
+- **What does not**: the realization factors. By default the depth charts reuse the 100bb
+  calibration (flop value = equity x realization measured at 100bb). So at 150 and 200bb, the
+  opening ranges are almost the 100bb ones, and the differences are in 4-bet and 5-bet play.
+  `--rounds N` recalibrates realization against postflop-solver at that depth, the same way as
+  the 100bb charts. It is much slower: one round at 40bb with a single flop per spot took 1m48s,
+  so the default 10 flops is roughly 15-20 minutes per depth per round, more for deeper stacks.
+  Run it unattended. `--out DIR` writes elsewhere so you can compare first. In that one-flop test
+  at 40bb, the SB moved from limping to raising (raise 28.7%, limp 21.7%), the direction
+  expected for short stacks; one flop per spot is too noisy to ship.
+
+Measured (3,000 DCFR iterations, M5 Max; best-response gain at most 0.0004bb per position):
+
+| Depth | Tree decisions | Solve time | UTG open | BTN open | SB first in: limp / raise | BB vs BTN open: call / 3-bet |
+|---|---|---|---|---|---|---|
+| 40bb | 727 | 12 s | 20.0% | 45.9% | 42.1% / 10.8% | 40.1% / 11.7% |
+| 60bb | 1,138 | 21 s | 16.5% | 39.1% | 47.6% / 4.7% | 35.3% / 13.1% |
+| 100bb | 1,937 | 78 s | 16.2% | 38.3% | 48.8% / 6.5% | 33.3% / 12.7% |
+| 150bb | 2,908 | 56 s | 16.7% | 38.3% | 48.0% / 7.6% | 32.6% / 13.1% |
+| 200bb | 4,594 | 80 s | 16.6% | 38.3% | 48.3% / 7.5% | 32.6% / 13.2% |
+
+At 40bb, opens are wider and the SB raises more, which is the expected direction with less
+postflop play behind. Below 20bb effective, there is no chart: those spots get the labelled
+heuristic grade.
+
 ## Improving or replacing the charts
 
 - More calibration rounds with more flops (fully unattended): `./overnight.sh 10 refine`, or

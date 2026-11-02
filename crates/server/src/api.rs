@@ -36,6 +36,8 @@ pub fn router(app: App) -> Router {
         .route("/api/session/start", post(session_start))
         .route("/api/session/stop", post(session_stop))
         .route("/api/sessions", get(sessions))
+        .route("/api/cash/summary", get(cash_summary))
+        .route("/api/cash/{id}/close", post(cash_close))
         .route("/api/hands", get(list_hands))
         .route("/api/hands/{id}", get(get_hand))
         .route("/api/hands/{id}/notes", post(set_notes))
@@ -97,10 +99,55 @@ async fn session_start(State(app): State<App>, Json(cfg): Json<SessionConfig>) -
     Ok(Json(json!({"session_id": id})))
 }
 
-async fn session_stop(State(app): State<App>) -> Json<Value> {
+#[derive(Deserialize, Default)]
+struct StopBody {
+    /// Session mode: cash out (the session can no longer be resumed)
+    #[serde(default)]
+    close: bool,
+}
+
+async fn session_stop(State(app): State<App>, body: Option<Json<StopBody>>) -> Json<Value> {
+    let close = body.map(|b| b.0.close).unwrap_or(false);
     if let Some(t) = app.table.lock().unwrap().take() {
-        let _ = t.cmd.send(TableCmd::Stop);
+        let _ = t.cmd.send(TableCmd::Stop { close });
+        if close {
+            app.db.close_cash_session(t.session_id);
+        }
     }
+    Json(json!({"ok": true}))
+}
+
+#[derive(Deserialize)]
+struct CashQ {
+    session: Option<i64>,
+}
+
+/// Session-mode results: every cash session, lifetime totals, the open session to resume, and
+/// the cumulative results graph (actual and all-in-adjusted) for one session or all of them.
+async fn cash_summary(State(app): State<App>, Query(q): Query<CashQ>) -> Json<Value> {
+    let sessions = app.db.cash_sessions();
+    let running = app.table.lock().unwrap().as_ref().map(|t| t.session_id);
+    let open = sessions.iter().find(|s| s["closed"] == false).cloned();
+    let sum = |k: &str| sessions.iter().map(|s| s[k].as_i64().unwrap_or(0)).sum::<i64>();
+    let ev: f64 = sessions.iter().fold(0.0, |a, s| a + s["ev_profit"].as_f64().unwrap_or(0.0));
+    let lifetime = json!({
+        "profit": sum("profit"), "ev_profit": ev, "buyins": sum("buyins"), "hands": sum("hands"),
+        "sessions": sessions.len(),
+    });
+    Json(json!({
+        "sessions": sessions, "lifetime": lifetime, "open": open, "running": running,
+        "graph": app.db.cash_graph(q.session),
+    }))
+}
+
+async fn cash_close(State(app): State<App>, Path(id): Path<i64>) -> Json<Value> {
+    let running = app.table.lock().unwrap().as_ref().map(|t| t.session_id) == Some(id);
+    if running {
+        if let Some(t) = app.table.lock().unwrap().take() {
+            let _ = t.cmd.send(TableCmd::Stop { close: true });
+        }
+    }
+    app.db.close_cash_session(id);
     Json(json!({"ok": true}))
 }
 
@@ -375,6 +422,10 @@ async fn drill_start(State(app): State<App>, Json(b): Json<DrillBody>) -> R {
         hero_profile: None,
         drill: Some(b.spec),
         auto_deal: false,
+        mode: "training".into(),
+        deal_pause_ms: 1500,
+        bb_dollars: 1.0,
+        resume: None,
     };
     let id = start_table(&app, cfg);
     Ok(Json(json!({"session_id": id})))
@@ -613,6 +664,9 @@ async fn ws_session(app: App, socket: WebSocket) {
                 Some("pause") => Some(TableCmd::Pause(v["paused"].as_bool().unwrap_or(false))),
                 Some("set_delay") => v["ms"].as_u64().map(TableCmd::SetDelay),
                 Some("set_coach") => v["mode"].as_str().map(|m| TableCmd::SetCoach(m.to_string())),
+                Some("set_deal_pause") => v["ms"].as_u64().map(TableCmd::SetDealPause),
+                Some("rebuy") => Some(TableCmd::Rebuy),
+                Some("top_up") => Some(TableCmd::TopUp),
                 _ => None,
             };
             if let Some(c) = cmd {

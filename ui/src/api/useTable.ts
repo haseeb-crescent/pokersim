@@ -36,6 +36,9 @@ export function useTable() {
           case 'state':
             setState(msg.state)
             break
+          case 'cash':
+            setState((t) => (t ? { ...t, cash: { ...(t.cash ?? { mode: 'session' }), ...msg.cash } } : t))
+            break
           case 'grade':
             setGrades((g) => [...g.filter((x) => !(x.hand_id === msg.grade.hand_id && x.index === msg.grade.index)), merge(msg.grade)].slice(-60))
             break

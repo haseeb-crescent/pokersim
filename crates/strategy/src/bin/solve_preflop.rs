@@ -32,6 +32,7 @@ fn main() -> anyhow::Result<()> {
         ev_bb: ev,
         calibration_rounds: 0,
         created: chrono_like_now(),
+        stack_bb: 100.0,
     };
     let charts = Charts::from_solver(&solver, &tree, meta, true);
     let out = args.get(3).cloned().unwrap_or_else(|| data.join("charts.json").to_string_lossy().to_string());

@@ -4,6 +4,7 @@
 mod api;
 mod coach;
 mod db;
+mod heuristic;
 mod llm;
 mod sim;
 mod state;
@@ -38,6 +39,7 @@ async fn main() -> anyhow::Result<()> {
     let (n, bytes) = app.res.cache.stats();
     println!("Solver Trainer");
     println!("  charts: {} nodes ({})", app.res.charts.nodes.len(), app.res.charts.meta.method);
+    println!("  chart depths: {}", app.res.depth_charts.iter().map(|(d, _)| format!("{d}bb")).collect::<Vec<_>>().join(", "));
     println!("  solve cache: {n} solves, {:.1} MB", bytes as f64 / 1e6);
     println!(
         "  explanations: {}",

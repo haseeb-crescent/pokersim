@@ -19,6 +19,13 @@ Overnight, fill the solve cache so common flops are instant:
 ./overnight.sh 8
 ```
 
+Preflop charts for stacks other than 100bb (Session mode), a separate command that takes about
+three minutes and is not part of the overnight run:
+
+```bash
+cargo run --release -p strategy --bin build_depth_charts
+```
+
 ## What is where
 
 | Area | Path |
@@ -57,14 +64,56 @@ from](docs/PREFLOP.md).
   hand's solver mix and the EV of each action, an exploit view against non-GTO bots, a fact sheet
   (equity, pot odds, SPR, range and nut advantage, blockers, MDF, bluff share), a 2-5 sentence
   explanation written by Claude from those facts only, and an "ask why" chat.
-- **Off-chart hands**: the action that leaves the chart is still graded ("limp: 0% in the chart,
-  the chart says raise 16% / fold 84%"). Later streets have no solver ranges, so they show why
-  there is no grade plus pot odds and equity against estimated ranges, which still teach the
-  price-versus-equity decision. Multiway pots are handled the same way.
+- **Off-chart hands**: when your own action leaves the chart, it is still graded against the
+  chart ("limp: 0% in the chart, the chart says raise 16% / fold 84%").
+  - When a bot takes the hand off the chart (a limp, an odd raise size), your next decision is
+    never matched to a chart node it doesn't belong to. It gets a grade labelled "off-chart:
+    heuristic grade" instead.
+  - That grade compares raise, call or check, and fold with a one-step EV model: equity against
+    the bots' actual ranges (their profile's version of the chart), each bot's modelled answer to
+    a raise, and sizing guidance (for example 4bb plus 1bb per limper out of position).
+  - It is called a blunder only when the model finds an EV loss of 3bb or more.
+  - Later streets have no solver ranges, so they show why there is no grade, plus pot odds and
+    equity against estimated ranges. Multiway pots are handled the same way.
 - **Logbook**: SQLite, every hand with full action, cards, solver results and grades, notes and
   tags; replayer with solver grids at each node; PokerStars export; stats; leak report with drills.
 - **Lab**: equity calculator, range viewer, spot drills, bot-vs-bot simulator (about 10,000
   hands/s), variance simulator, and a Learn section with ten concept pages.
+
+## Training and Session modes
+
+Pick the mode on the setup screen.
+
+- **Training**: every stack resets to 100bb each hand, so every spot matches the 100bb charts and
+  the solver library exactly.
+- **Session**: a cash game.
+  - Stacks carry over from hand to hand and across app restarts. They are saved in SQLite after
+    every hand; leaving mid-hand drops that hand and keeps the stacks from before it.
+  - You buy in for 100bb, rebuy for 100bb when you bust, and can top up to 100bb between hands.
+    A top-up clicked during a hand is applied before the next one.
+  - The table shows your buy-ins, session and lifetime profit in bb and dollars (set the big
+    blind's dollar value at setup), and a results graph with the all-in-adjusted (EV) line.
+    Stats has the lifetime view across sessions.
+  - Bots buy in for 100bb and rebuy when busted. The GTO reg, the LAG reg and the Hunter (which
+    starts as a GTO reg) top up to 100bb before a hand when below it. The fish, station, maniac
+    and nit let their stacks ride.
+  - Hands deal automatically after a pause you set at setup or in the toolbar. `P` pauses and `N`
+    deals now.
+  - **Leave** keeps the session open: the setup screen offers to resume it with its lineup,
+    stacks and stakes. **Cash out** closes it. Starting a new Session cashes out the open one.
+
+Grading is the same in both modes. In Session mode, stack depth is handled like this:
+
+- **Postflop**: within 10% of 100bb effective, the 100bb solver library and cache are used.
+  Otherwise the flop is solved live at a depth bucket and cached under that bucket, so later hands
+  at a similar depth are instant. Buckets are 5bb apart below 50bb, 10bb apart up to 100bb and 20bb
+  apart above, so a bucket is never more than about 12% from the real stack. Deep buckets solve
+  more slowly than 100bb (more raises fit before all-in).
+- **Preflop**: charts at 40, 60, 150 and 200bb sit next to the 100bb ones. Each player uses the
+  chart nearest its effective stack, and the coach says when a grade used a non-100bb chart.
+- **Very short stacks** (under 20bb effective) have no chart or solver spot: preflop decisions get
+  the labelled heuristic grade, and postflop decisions get the unsolved view. Multiway pots stay
+  unsolved, as in Training.
 
 ## Explanations
 

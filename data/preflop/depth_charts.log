@@ -1,0 +1,28 @@
+40bb: abstract tree 727 decisions
+  round 0: CFR 3000 iters in 12.4s, BR gain [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    (root)       UTG  F 80.0%  R 20.0%
+    F-F-F        BTN  F 54.1%  R 45.9%
+    F-F-F-F      SB   F 47.1%  C 42.1%  R 10.8%
+    F-F-F-R-F    BB   F 48.3%  C 40.1%  R 11.7%
+  wrote /Users/hasee/Library/Application Support/Claude/scratch-workspaces/bc647e58-7af0-4914-a2f3-e48c63bab6ff/6ed510e5-35b9-43d5-a6fa-4fa3bafb9ada/scratch-2026-11-01-06b843/poker-trainer/crates/strategy/../../data/preflop/charts_40bb.json
+60bb: abstract tree 1138 decisions
+  round 0: CFR 3000 iters in 21.2s, BR gain [0.0, 0.0, 0.0001, 0.0001, 0.0001, 0.0001]
+    (root)       UTG  F 83.5%  R 16.5%
+    F-F-F        BTN  F 60.9%  R 39.1%
+    F-F-F-F      SB   F 47.8%  C 47.6%  R 4.7%
+    F-F-F-R-F    BB   F 51.7%  C 35.3%  R 13.1%
+  wrote /Users/hasee/Library/Application Support/Claude/scratch-workspaces/bc647e58-7af0-4914-a2f3-e48c63bab6ff/6ed510e5-35b9-43d5-a6fa-4fa3bafb9ada/scratch-2026-11-01-06b843/poker-trainer/crates/strategy/../../data/preflop/charts_60bb.json
+150bb: abstract tree 2908 decisions
+  round 0: CFR 3000 iters in 55.5s, BR gain [0.0001, 0.0004, 0.0001, 0.0002, 0.0002, 0.0001]
+    (root)       UTG  F 83.3%  R 16.7%
+    F-F-F        BTN  F 61.7%  R 38.3%
+    F-F-F-F      SB   F 44.5%  C 48.0%  R 7.6%
+    F-F-F-R-F    BB   F 54.3%  C 32.6%  R 13.1%
+  wrote /Users/hasee/Library/Application Support/Claude/scratch-workspaces/bc647e58-7af0-4914-a2f3-e48c63bab6ff/6ed510e5-35b9-43d5-a6fa-4fa3bafb9ada/scratch-2026-11-01-06b843/poker-trainer/crates/strategy/../../data/preflop/charts_150bb.json
+200bb: abstract tree 4594 decisions
+  round 0: CFR 3000 iters in 79.6s, BR gain [0.0002, 0.0001, 0.0002, 0.0001, 0.0002, 0.0002]
+    (root)       UTG  F 83.4%  R 16.6%
+    F-F-F        BTN  F 61.7%  R 38.3%
+    F-F-F-F      SB   F 44.2%  C 48.3%  R 7.5%
+    F-F-F-R-F    BB   F 54.2%  C 32.6%  R 13.2%
+  wrote /Users/hasee/Library/Application Support/Claude/scratch-workspaces/bc647e58-7af0-4914-a2f3-e48c63bab6ff/6ed510e5-35b9-43d5-a6fa-4fa3bafb9ada/scratch-2026-11-01-06b843/poker-trainer/crates/strategy/../../data/preflop/charts_200bb.json

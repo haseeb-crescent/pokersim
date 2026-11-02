@@ -18,6 +18,15 @@ pub struct ChartMeta {
     pub ev_bb: Vec<f64>,
     pub calibration_rounds: u32,
     pub created: String,
+    /// starting stack depth of the charts in big blinds (absent in older files: 100)
+    #[serde(default)]
+    pub stack_bb: f64,
+}
+
+impl ChartMeta {
+    pub fn depth_bb(&self) -> f64 {
+        if self.stack_bb > 0.0 { self.stack_bb } else { 100.0 }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -78,7 +87,7 @@ impl Charts {
                             .iter()
                             .map(|x| match x {
                                 PfAction::Raise(v) => *v,
-                                PfAction::AllIn => super::game::STACK,
+                                PfAction::AllIn => tree.stack,
                                 _ => 0,
                             })
                             .collect(),
@@ -204,3 +213,40 @@ fn round3(x: f64) -> f32 {
 }
 
 pub const POSITIONS: [&str; NP] = POS;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The 100bb abstract tree must match the shipped charts exactly (node keys, actions,
+    /// sizes): the charts, the realization factors and every cached postflop solve are keyed to
+    /// it.
+    #[test]
+    fn tree_matches_shipped_100bb_charts() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/preflop/charts.json");
+        let charts = Charts::load(&path).unwrap();
+        let tree = Tree::build();
+        let mut n = 0;
+        for node in &tree.nodes {
+            if let Node::Decision { actions, key, .. } = node {
+                let c = charts.nodes.get(key).unwrap_or_else(|| panic!("tree node {key} missing from charts"));
+                let codes: Vec<String> = actions.iter().map(|a| a.code().to_string()).collect();
+                assert_eq!(codes, c.actions, "actions at {key}");
+                let sizes: Vec<i32> = actions.iter().map(|a| match a { PfAction::Raise(v) => *v, PfAction::AllIn => tree.stack, _ => 0 }).collect();
+                assert_eq!(sizes, c.sizes, "sizes at {key}");
+                n += 1;
+            }
+        }
+        assert_eq!(n, charts.nodes.len());
+    }
+
+    #[test]
+    fn deeper_stacks_get_a_non_all_in_five_bet() {
+        let deep = Tree::build_with_stack(20_000);
+        let shallow = Tree::build_with_stack(4_000);
+        let five_bets = |t: &Tree| t.nodes.iter().filter(|n| matches!(n, Node::Decision { level: 3, actions, .. } if actions.iter().any(|a| matches!(a, PfAction::Raise(_))))).count();
+        assert!(five_bets(&deep) > 0);
+        assert_eq!(five_bets(&shallow), 0);
+        assert!(deep.decision_count() > Tree::build().decision_count());
+    }
+}

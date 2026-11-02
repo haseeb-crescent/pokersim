@@ -89,7 +89,7 @@ pub fn calibrate(solver: &Solver, tree: &Tree, prev: &Realization, flops_per_spo
         players.sort_by_key(|&p| postflop_rank(p));
         let (oop, ip) = (players[0], players[1]);
         let pot: i32 = contrib.iter().sum();
-        let stack = STACK - contrib[oop].max(contrib[ip]);
+        let stack = tree.stack - contrib[oop].max(contrib[ip]);
         let grid = |p: usize| -> Range {
             let g: Vec<f32> = solver.range_at(tid, p).iter().map(|&x| x as f32).collect();
             let mx = g.iter().cloned().fold(0.0f32, f32::max).max(1e-9);
