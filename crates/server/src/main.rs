@@ -1,0 +1,52 @@
+//! Solver Trainer server: serves the UI and the API on http://127.0.0.1:8787.
+//! Flags: --no-open (don't open the browser), --port N.
+
+mod api;
+mod coach;
+mod db;
+mod llm;
+mod sim;
+mod state;
+mod stats;
+mod table;
+mod view;
+
+use state::*;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use tower_http::services::{ServeDir, ServeFile};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize()?;
+    let _ = dotenvy::from_path(root.join(".env"));
+    let args: Vec<String> = std::env::args().collect();
+    let port: u16 = args.iter().position(|a| a == "--port").and_then(|i| args.get(i + 1)).and_then(|p| p.parse().ok()).unwrap_or(8787);
+    let open = !args.iter().any(|a| a == "--no-open");
+
+    let res = Arc::new(Resources::load(root.clone())?);
+    let db = Arc::new(db::Db::open(&root.join("data/trainer.sqlite"))?);
+    let llm = llm::Llm::from_env().map(Arc::new);
+    let (tx, _) = tokio::sync::broadcast::channel(512);
+    let app: App = Arc::new(AppState { res, db, llm, table: Mutex::new(None), tx, sims: Mutex::new(HashMap::new()), lab_solves: Mutex::new(HashMap::new()) });
+
+    let dist = root.join("ui/dist");
+    let static_files = ServeDir::new(&dist).fallback(ServeFile::new(dist.join("index.html")));
+    let router = api::router(app.clone()).fallback_service(static_files);
+
+    let (n, bytes) = app.res.cache.stats();
+    println!("Solver Trainer");
+    println!("  charts: {} nodes ({})", app.res.charts.nodes.len(), app.res.charts.meta.method);
+    println!("  solve cache: {n} solves, {:.1} MB", bytes as f64 / 1e6);
+    println!("  explanations: {}", if app.llm.is_some() { format!("Claude ({})", llm::MODEL) } else { "off (set ANTHROPIC_API_KEY in .env)".into() });
+    let addr = format!("127.0.0.1:{port}");
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let url = format!("http://{addr}");
+    println!("  listening on {url}");
+    if open && dist.exists() {
+        let _ = std::process::Command::new("open").arg(&url).spawn();
+    }
+    axum::serve(listener, router).await?;
+    Ok(())
+}

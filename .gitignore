@@ -1,0 +1,9 @@
+/target
+/ui/node_modules
+/ui/dist
+/data/cache
+/data/trainer.sqlite*
+/data/preflop/*.bak
+.env
+/data/preflop/archive
+.DS_Store
