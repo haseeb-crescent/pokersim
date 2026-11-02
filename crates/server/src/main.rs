@@ -25,9 +25,11 @@ async fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let port: u16 = args.iter().position(|a| a == "--port").and_then(|i| args.get(i + 1)).and_then(|p| p.parse().ok()).unwrap_or(8787);
     let open = !args.iter().any(|a| a == "--no-open");
+    // --db PATH keeps a separate logbook (demos, experiments); default data/trainer.sqlite
+    let db_path = args.iter().position(|a| a == "--db").and_then(|i| args.get(i + 1)).map(PathBuf::from).unwrap_or_else(|| root.join("data/trainer.sqlite"));
 
     let res = Arc::new(Resources::load(root.clone())?);
-    let db = Arc::new(db::Db::open(&root.join("data/trainer.sqlite"))?);
+    let db = Arc::new(db::Db::open(&db_path)?);
     let llm = llm::Llm::detect().await.map(Arc::new);
     let (tx, _) = tokio::sync::broadcast::channel(512);
     let app: App = Arc::new(AppState { res, db, llm, table: Mutex::new(None), tx, sims: Mutex::new(HashMap::new()), lab_solves: Mutex::new(HashMap::new()) });
