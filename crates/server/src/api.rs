@@ -60,7 +60,8 @@ pub fn router(app: App) -> Router {
 }
 
 async fn health(State(app): State<App>) -> Json<Value> {
-    Json(json!({"ok": true, "explanations": app.llm.is_some()}))
+    let via = app.llm.as_ref().map(|l| l.via()).unwrap_or("none");
+    Json(json!({"ok": true, "explanations": via != "none", "explanations_via": via}))
 }
 
 async fn profiles(State(app): State<App>) -> Json<Value> {
@@ -196,7 +197,7 @@ struct ExplainBody {
 }
 
 async fn explain(State(app): State<App>, Path(id): Path<i64>, Json(b): Json<ExplainBody>) -> R {
-    let llm = app.llm.clone().ok_or_else(|| bad("Set ANTHROPIC_API_KEY in .env to enable explanations"))?;
+    let llm = app.llm.clone().ok_or_else(|| bad("No explanation backend: log in to the claude CLI, or set ANTHROPIC_API_KEY in .env"))?;
     let g = app.db.decision(id, b.index).ok_or((StatusCode::NOT_FOUND, "no such decision".into()))?;
     let text = llm.explain(&g).await.map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
     app.db.set_explanation(id, b.index, &text);
@@ -208,6 +209,8 @@ struct AskBody {
     hand_id: i64,
     index: Option<i64>,
     messages: Vec<AskMsg>,
+    /// continues a claude CLI conversation (from the previous reply)
+    chat_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -217,7 +220,7 @@ struct AskMsg {
 }
 
 async fn ask(State(app): State<App>, Json(b): Json<AskBody>) -> R {
-    let llm = app.llm.clone().ok_or_else(|| bad("Set ANTHROPIC_API_KEY in .env to enable the coach chat"))?;
+    let llm = app.llm.clone().ok_or_else(|| bad("No coach chat backend: log in to the claude CLI, or set ANTHROPIC_API_KEY in .env"))?;
     let h = app.db.hand(b.hand_id).ok_or((StatusCode::NOT_FOUND, "no such hand".into()))?;
     let decisions = app.db.decisions(b.hand_id);
     let rec = &h["record"];
@@ -242,8 +245,8 @@ async fn ask(State(app): State<App>, Json(b): Json<AskBody>) -> R {
     if hist.is_empty() || hist.last().unwrap().0 != "user" {
         return Err(bad("the last message must be the student's question"));
     }
-    let reply = llm.ask(&context, &hist).await.map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
-    Ok(Json(json!({"reply": reply})))
+    let reply = llm.ask(&context, &hist, b.chat_id.as_deref()).await.map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    Ok(Json(json!({"reply": reply.text, "chat_id": reply.chat_id, "via": llm.via()})))
 }
 
 #[derive(Deserialize)]

@@ -513,13 +513,15 @@ async fn run_table(app: App, cfg: SessionConfig, session_id: i64, mut rx: mpsc::
                 let mode = ctl.coach.clone();
                 let task = tokio::spawn(async move {
                     let res = app2.res.clone();
-                    let g = tokio::task::spawn_blocking(move || grade(&res, &d, true)).await.ok()?;
+                    let mut g = tokio::task::spawn_blocking(move || grade(&res, &d, true)).await.ok()?;
+                    let explaining = app2.llm.is_some() && mode != "off";
+                    g["explanation_status"] = json!(if explaining { "pending" } else { "none" });
                     app2.db.save_decision(g["hand_id"].as_i64().unwrap_or(0), g["index"].as_i64().unwrap_or(0), &g);
                     if mode == "decision" {
                         let _ = app2.tx.send(json!({"type": "grade", "grade": g}).to_string());
                     }
-                    if mode != "off" {
-                        spawn_explanation(app2.clone(), g.clone(), mode == "decision");
+                    if explaining {
+                        spawn_explanation(app2.clone(), g.clone(), true);
                     }
                     Some(g)
                 });
@@ -725,7 +727,13 @@ pub fn spawn_explanation(app: App, g: Value, push: bool) {
                     let _ = app.tx.send(json!({"type": "explanation", "hand_id": hid, "index": idx, "text": text}).to_string());
                 }
             }
-            Err(e) => eprintln!("explanation failed: {e}"),
+            Err(e) => {
+                eprintln!("explanation failed: {e}");
+                let (hid, idx) = (g["hand_id"].as_i64().unwrap_or(0), g["index"].as_i64().unwrap_or(0));
+                if push {
+                    let _ = app.tx.send(json!({"type": "explanation", "hand_id": hid, "index": idx, "text": null, "error": e.to_string()}).to_string());
+                }
+            }
         }
     });
 }

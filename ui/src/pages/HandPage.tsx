@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { bb, getJson, postJson } from '../api/client'
 import type { DecisionGrade, PreflopNode } from '../api/types'
-import { GradeCard } from '../components/GradeCard'
+import { GradeCard, Thinking, useExplanationsVia } from '../components/GradeCard'
 import { Cards, CardText } from '../components/PlayingCard'
 import { RangeGrid, StrategyBar } from '../components/RangeGrid'
 import { LinkTerms } from '../components/Term'
@@ -76,18 +76,26 @@ function Chat({ handId, index }: { handId: number; index: number | null }) {
   const [q, setQ] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  // continues the claude CLI conversation (--resume) across follow-ups
+  const [chatId, setChatId] = useState<string | null>(null)
+  const via = useExplanationsVia()
+  useEffect(() => {
+    setMsgs([])
+    setChatId(null)
+  }, [handId, index])
   const ask = async () => {
-    if (!q.trim()) return
+    if (!q.trim() || busy) return
     const next = [...msgs, { role: 'user' as const, text: q.trim() }]
     setMsgs(next)
     setQ('')
     setBusy(true)
     setErr(null)
     try {
-      const r = await postJson<{ reply: string }>('/api/coach/ask', { hand_id: handId, index, messages: next })
+      const r = await postJson<{ reply: string; chat_id: string | null }>('/api/coach/ask', { hand_id: handId, index, messages: next, chat_id: chatId })
       setMsgs([...next, { role: 'assistant', text: r.reply }])
+      if (r.chat_id) setChatId(r.chat_id)
     } catch (e) {
-      setErr(String(e))
+      setErr(String(e).replace(/^Error: \d+ /, ''))
     }
     setBusy(false)
   }
@@ -100,7 +108,13 @@ function Chat({ handId, index }: { handId: number; index: number | null }) {
           {m.role === 'assistant' ? <LinkTerms text={m.text} /> : m.text}
         </div>
       ))}
+      {busy && (
+        <div className="msg assistant">
+          <Thinking />
+        </div>
+      )}
       {err && <p className="pill-bad small">{err}</p>}
+      {via === 'none' && <p className="faint small">No coach chat backend: log in to the claude CLI, or add ANTHROPIC_API_KEY to .env.</p>}
       <div className="row">
         <input className="grow" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && ask()} placeholder="Why does the solver check this flop so often?" />
         <button className="primary" onClick={ask} disabled={busy}>

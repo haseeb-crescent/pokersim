@@ -14,7 +14,7 @@ use engine::rules::*;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Duration;
-use strategy::bots::decide::estimated_range;
+use strategy::bots::decide::{estimated_range, estimated_range_preflop};
 use strategy::bots::profile::Profile;
 use strategy::bots::view::{PublicState, POS_NAMES};
 use strategy::coach::facts::*;
@@ -66,22 +66,52 @@ fn hand_str(h: [Card; 2]) -> String {
 }
 
 pub fn grade(res: &Resources, d: &HeroDecision, want_exploit: bool) -> Value {
-    let g = if d.public.street == Street::Preflop {
-        grade_preflop(res, d)
-    } else if let (Some(hs), Some(ss), true) = (&d.hand_solve, &d.street_solve, d.public.live_seats().len() == 2) {
-        match grade_postflop(res, d, hs, ss, want_exploit) {
+    if d.public.street == Street::Preflop {
+        return grade_preflop(res, d);
+    }
+    let live = d.public.live_seats().len();
+    if let (Some(hs), Some(ss), true) = (&d.hand_solve, &d.street_solve, live == 2) {
+        return match grade_postflop(res, d, hs, ss, want_exploit) {
             Ok(v) => v,
-            Err(e) => unsolved(res, d, &format!("Solver unavailable for this spot ({e}); not graded.")),
-        }
-    } else {
-        let note = if d.public.live_seats().len() > 2 {
-            "Multiway pot (3+ players): no clean solver solution exists, so this decision is unsolved and not graded.".to_string()
-        } else {
-            "This heads-up pot came from a preflop line outside the chart tree (for example 4+ players or limps), so there are no solver ranges; not graded.".to_string()
+            Err(e) => unsolved(res, d, &format!("the solver was unavailable for this spot ({e})")),
         };
-        unsolved(res, d, &note)
+    }
+    let reason = if live > 2 {
+        format!("{live} players are in the pot, and there is no solver solution for multiway pots")
+    } else if let Some(r) = off_chart_reason(res, &d.public, d.hero_seat) {
+        r
+    } else {
+        "the pot was multiway on the flop, so there are no solver ranges for the later streets".to_string()
     };
-    g
+    unsolved(res, d, &reason)
+}
+
+/// Why a hand has no solver ranges: the first preflop action the chart tree does not contain.
+fn off_chart_reason(res: &Resources, st: &PublicState, hero: usize) -> Option<String> {
+    let codes = st.preflop_codes();
+    let pre: Vec<_> = st.actions.iter().filter(|a| a.street == Street::Preflop).collect();
+    let i = match res.charts.map_key(&codes) {
+        Some((_, changed)) => changed.iter().position(|&c| c)?,
+        None => return Some("the preflop action went outside the chart tree, so there are no solver ranges for this hand".into()),
+    };
+    let a = pre[i];
+    let who = if a.seat == hero { "you".to_string() } else { format!("the {}", POS_NAMES[st.positions[a.seat]]) };
+    let raised_before = pre[..i].iter().any(|x| matches!(x.kind, ActKind::Raise | ActKind::Bet));
+    let what = match a.kind {
+        ActKind::Call if !raised_before => "open-limped (in the chart tree only the small blind limps)",
+        ActKind::Call => "called where the chart tree has no call (a fourth player into the pot, or a cold call of a 3-bet or more)",
+        ActKind::Raise | ActKind::Bet => "raised where the chart tree has no raise",
+        ActKind::Check => "checked where the chart tree has no check",
+        ActKind::Fold => "folded where the chart tree has no fold",
+    };
+    Some(format!("{who} {what}, so the hand left the chart tree and there are no solver ranges for it"))
+}
+
+/// "raise 16% / fold 84%" for one hand's chart mix.
+fn chart_mix_text(labels: &[String], freqs: &[f64]) -> String {
+    let mut parts: Vec<(f64, String)> = labels.iter().zip(freqs).filter(|(_, &f)| f >= 0.005).map(|(l, &f)| (f, format!("{} {:.0}%", l.to_lowercase(), 100.0 * f))).collect();
+    parts.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    parts.into_iter().map(|p| p.1).collect::<Vec<_>>().join(" / ")
 }
 
 fn base_facts(d: &HeroDecision) -> FactSheet {
@@ -126,7 +156,8 @@ fn grade_preflop(res: &Resources, d: &HeroDecision) -> Value {
     let pos = st.positions[d.hero_seat];
     let codes = st.preflop_codes();
     let Some((node, key)) = res.charts.lookup(&codes).filter(|(n, _)| n.player == pos) else {
-        return unsolved(res, d, "This preflop line is outside the chart tree, so it is not graded.");
+        let reason = off_chart_reason(res, st, d.hero_seat).unwrap_or_else(|| "this preflop line is outside the chart tree".into());
+        return unsolved(res, d, &reason);
     };
     let class = class_of(d.hole[0], d.hole[1]);
     let labels: Vec<String> = node
@@ -194,9 +225,18 @@ fn grade_preflop(res: &Resources, d: &HeroDecision) -> Value {
     if res.charts.map_key(&codes).map(|(_, ch)| ch.iter().any(|&c| c)).unwrap_or(false) {
         note.push_str(" Earlier action was outside the chart tree (for example an open-limp, treated as an open), so this uses the nearest chart node.");
     }
-    if chosen_i.is_none() {
+    let off_chart = if chosen_i.is_none() {
+        let mix = chart_mix_text(&labels, &freqs);
+        let continues = !matches!(d.act, Act::Fold);
+        let mut message = format!("{chosen_label} isn't in the chart here (0%). With {} the chart says {mix}.", class_name(class));
+        if continues {
+            message.push_str(" This takes the hand off the chart tree: the rest of the hand has no solver ranges, so later decisions show pot odds and equity against estimated ranges instead of a grade.");
+        }
         note.push_str(" Your action is not part of the chart strategy here.");
-    }
+        Some(json!({"action": chosen_label.to_lowercase(), "chart": mix, "message": message, "leaves_chart": continues}))
+    } else {
+        None
+    };
     let actions: Vec<ActionMix> = labels
         .iter()
         .zip(&freqs)
@@ -226,6 +266,7 @@ fn grade_preflop(res: &Resources, d: &HeroDecision) -> Value {
     };
     let mut v = serde_json::to_value(&g).unwrap();
     v["preflop_key"] = json!(key);
+    v["off_chart"] = off_chart.unwrap_or(Value::Null);
     v
 }
 
@@ -491,30 +532,40 @@ fn exploit_view(spot: &Arc<Spot>, line: &[LineAction], view: &NodeView, hero_pla
     })
 }
 
-fn unsolved(res: &Resources, d: &HeroDecision, note: &str) -> Value {
+fn unsolved(res: &Resources, d: &HeroDecision, reason: &str) -> Value {
     let st = &d.public;
     let legal = st.legal.as_ref().unwrap();
     let mut facts = base_facts(d);
     let opps: Vec<usize> = st.live_seats().into_iter().filter(|&s| s != d.hero_seat).collect();
     facts.position = if opps.len() > 1 { "multiway".into() } else { "heads-up".into() };
-    if st.street != Street::Preflop {
-        let mut players = vec![engine::equity::Holding::Hand(d.hole[0], d.hole[1])];
-        for &o in &opps {
-            let mut r = estimated_range(st, o, &res.charts);
-            r.remove_dead((1u64 << d.hole[0]) | (1u64 << d.hole[1]));
-            if r.is_empty() {
-                r = engine::Range::full();
-            }
-            players.push(engine::equity::Holding::Range(r));
+    // equity against estimated ranges: chart ranges for the preflop line, narrowed by the
+    // postflop action
+    let mut players = vec![engine::equity::Holding::Hand(d.hole[0], d.hole[1])];
+    for &o in &opps {
+        let mut r = if st.street == Street::Preflop { estimated_range_preflop(st, o, &res.charts) } else { estimated_range(st, o, &res.charts) };
+        r.remove_dead((1u64 << d.hole[0]) | (1u64 << d.hole[1]));
+        if r.is_empty() {
+            r = engine::Range::full();
         }
+        players.push(engine::equity::Holding::Range(r));
+    }
+    if !opps.is_empty() {
         let e = engine::equity::equity(&players, &st.board, &[], 20_000, 0);
         facts.equity_vs_range = Some((e.equity[0] * 1000.0).round() / 1000.0);
-        facts.notes.push("equity_vs_range is against estimated ranges (chart ranges narrowed by the postflop action), not solver ranges".into());
+        facts.notes.push(if st.street == Street::Preflop {
+            "equity_vs_range is all-in equity against the opponents' estimated chart ranges, not solver ranges".into()
+        } else {
+            "equity_vs_range is against estimated ranges (chart ranges narrowed by the postflop action), not solver ranges".into()
+        });
     }
+    let hp = POS_NAMES[st.positions[d.hero_seat]];
     let (spot, spot_key) = if st.street == Street::Preflop {
-        (format!("{} preflop (off-chart line)", POS_NAMES[st.positions[d.hero_seat]]), "PF|offchart".to_string())
+        (format!("{hp} · off-chart line"), "PF|offchart".to_string())
+    } else if opps.len() > 1 {
+        (format!("{hp} · {}-way pot", opps.len() + 1), format!("MW|{}", st.street.name()))
     } else {
-        (format!("{} · {} players · {}", POS_NAMES[st.positions[d.hero_seat]], opps.len() + 1, st.street.name()), format!("MW|{}", st.street.name()))
+        let vp = POS_NAMES[st.positions[opps[0]]];
+        (format!("{hp} vs {vp} · off-chart line"), format!("OFF|{}", st.street.name()))
     };
     let chosen = match d.act {
         Act::Fold => "Fold".into(),
@@ -522,6 +573,10 @@ fn unsolved(res: &Resources, d: &HeroDecision, note: &str) -> Value {
         Act::Call => "Call".into(),
         Act::BetTo(x) => if legal.current_bet == 0 { format!("Bet {}", fmt_bb(x as i32)) } else { format!("Raise to {}", fmt_bb(x as i32)) },
     };
+    let mut reason_text = reason.to_string();
+    if let Some(c) = reason_text.get(0..1) {
+        reason_text = c.to_uppercase() + &reason_text[1..];
+    }
     let g = DecisionGrade {
         hand_id: d.hand_id,
         index: d.index,
@@ -538,10 +593,12 @@ fn unsolved(res: &Resources, d: &HeroDecision, note: &str) -> Value {
         ev_loss_bb: None,
         grade: "Unsolved".into(),
         precision_pct: None,
-        note: Some(note.into()),
+        note: Some(format!("{reason_text}. Not graded; the pot odds and equity below still apply.")),
         facts: Some(facts),
         explanation: None,
         exploit: None,
     };
-    serde_json::to_value(&g).unwrap()
+    let mut v = serde_json::to_value(&g).unwrap();
+    v["unsolved_reason"] = json!(reason_text);
+    v
 }
