@@ -9,6 +9,14 @@ export function useTable() {
   const [error, setError] = useState<string | null>(null)
   const [connected, setConnected] = useState(false)
   const ws = useRef<WebSocket | null>(null)
+  // explanations that arrive before their grade (hand mode) are merged in when it does
+  const early = useRef(new Map<string, { text: string | null; error?: string }>())
+
+  const merge = (g: DecisionGrade): DecisionGrade => {
+    const e = early.current.get(`${g.hand_id}-${g.index}`)
+    if (!e || g.explanation) return g
+    return { ...g, explanation: e.text, explanation_error: e.error ?? null, explanation_status: 'none' }
+  }
 
   useEffect(() => {
     let closed = false
@@ -29,17 +37,24 @@ export function useTable() {
             setState(msg.state)
             break
           case 'grade':
-            setGrades((g) => [...g.filter((x) => !(x.hand_id === msg.grade.hand_id && x.index === msg.grade.index)), msg.grade].slice(-60))
+            setGrades((g) => [...g.filter((x) => !(x.hand_id === msg.grade.hand_id && x.index === msg.grade.index)), merge(msg.grade)].slice(-60))
             break
           case 'explanation':
-            setGrades((g) => g.map((x) => (x.hand_id === msg.hand_id && x.index === msg.index ? { ...x, explanation: msg.text } : x)))
+            early.current.set(`${msg.hand_id}-${msg.index}`, { text: msg.text, error: msg.error })
+            setGrades((g) =>
+              g.map((x) =>
+                x.hand_id === msg.hand_id && x.index === msg.index
+                  ? { ...x, explanation: msg.text, explanation_error: msg.error ?? null, explanation_status: 'none' }
+                  : x,
+              ),
+            )
             break
           case 'hand_complete':
             setLastHand(msg.summary)
             if (msg.summary.grades?.length) {
               setGrades((g) => {
                 const keep = g.filter((x) => x.hand_id !== msg.summary.hand_id)
-                return [...keep, ...msg.summary.grades].slice(-60)
+                return [...keep, ...msg.summary.grades.map(merge)].slice(-60)
               })
             }
             break

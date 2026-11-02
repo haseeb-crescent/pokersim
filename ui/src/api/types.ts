@@ -129,6 +129,13 @@ export interface DecisionGrade {
   facts: FactSheet | null
   explanation: string | null
   exploit: ExploitView | null
+  /** set when your action is not in the preflop chart at all */
+  off_chart?: { action: string; chart: string; message: string; leaves_chart: boolean } | null
+  /** why an unsolved decision has no grade */
+  unsolved_reason?: string | null
+  /** 'pending' while the coach is writing the explanation */
+  explanation_status?: 'pending' | 'none'
+  explanation_error?: string | null
 }
 
 export interface ExploitView {
@@ -141,7 +148,7 @@ export interface ExploitView {
 export type ServerMsg =
   | { type: 'state'; state: TableState }
   | { type: 'grade'; grade: DecisionGrade }
-  | { type: 'explanation'; hand_id: number; index: number; text: string }
+  | { type: 'explanation'; hand_id: number; index: number; text: string | null; error?: string }
   | { type: 'hand_complete'; summary: HandResultSummary }
   | { type: 'error'; message: string }
 
