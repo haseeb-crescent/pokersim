@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = ["crates/engine", "crates/strategy", "crates/server"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "AGPL-3.0-or-later"
+
+[workspace.dependencies]
+postflop-solver = { path = "vendor/postflop-solver", default-features = false, features = ["bincode", "rayon", "zstd"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = { version = "0.8", features = ["small_rng"] }
+rayon = "1.10"
+anyhow = "1"
+
+[profile.release]
+opt-level = 3
+debug = false
+codegen-units = 16
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

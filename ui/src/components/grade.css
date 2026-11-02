@@ -1,0 +1,23 @@
+.grade-card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; overflow: hidden; }
+.grade-head { display: flex; gap: 8px; align-items: center; padding: 8px 10px; cursor: pointer; }
+.grade-head:hover { background: var(--panel-2); }
+.grade-badge { font-size: 11px; font-weight: 700; border: 1px solid; border-radius: 999px; padding: 1px 8px; text-transform: uppercase; letter-spacing: 0.4px; flex-shrink: 0; }
+.grade-spot { flex: 1; font-size: 13px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grade-loss { color: var(--bad); font-weight: 600; font-family: var(--mono); font-size: 12px; }
+.grade-body { padding: 4px 12px 12px; display: flex; flex-direction: column; gap: 8px; }
+.mix { font-size: 13px; }
+.mix td, .mix th { padding: 4px 6px; }
+.mix tr.chosen td { background: rgba(45, 212, 191, 0.08); }
+.mix tr.chosen td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
+.mix .dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
+.freqbar { display: inline-block; width: 60px; height: 6px; background: var(--bg-2); border-radius: 3px; margin-right: 6px; vertical-align: middle; overflow: hidden; }
+.freqbar span { display: block; height: 100%; }
+.best-ev { color: var(--good); font-weight: 600; }
+.explanation { background: var(--bg-2); border-left: 3px solid var(--accent); padding: 8px 12px; border-radius: 4px; margin: 0; line-height: 1.6; }
+.note { color: var(--text-2); font-size: 12px; margin: 0; }
+.small { font-size: 12px; }
+.exploit { border: 1px dashed #7c3aed; border-radius: 8px; padding: 8px; }
+.exploit-title { font-size: 13px; margin-bottom: 4px; color: #c4b5fd; }
+.facts summary { cursor: pointer; color: var(--text-2); font-size: 12px; }
+.facts-grid { display: grid; grid-template-columns: 140px 1fr; gap: 3px 10px; font-size: 12px; margin-top: 6px; }
+.facts-grid > span:nth-child(odd) { color: var(--text-3); }

@@ -1,0 +1,10 @@
+applied neighbour smoothing to the realization factors
+round 0: CFR 3000 iters in 78.0s, EV/pos [0.095, 0.112, 0.137, 0.175, -0.311, -0.478] bb, BR gain [0.0001, 0.0001, 0.0002, 0.0001, 0.0001, 0.0001]
+    (root)         UTG  F 83.8%  R 16.2%
+    F              HJ   F 80.2%  R 19.8%
+    F-F            CO   F 73.1%  R 26.9%
+    F-F-F          BTN  F 61.7%  R 38.3%
+    F-F-F-F        SB   F 44.7%  C 48.8%  R 6.5%
+    F-F-F-R-F      BB   F 54.0%  C 33.3%  R 12.7%
+    F-F-F-F-R      BB   F 37.9%  C 50.9%  R 11.1%
+wrote charts.json (1937 nodes) and realization.json

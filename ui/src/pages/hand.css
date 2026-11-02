@@ -1,0 +1,11 @@
+.hand-page { max-width: 1400px; }
+.replay-table { display: flex; gap: 20px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+.replay-board { min-width: 300px; min-height: 80px; display: flex; align-items: center; justify-content: center; background: var(--felt); border-radius: 12px; padding: 8px 16px; }
+.replay-seats { display: grid; grid-template-columns: repeat(3, auto); gap: 6px 16px; font-size: 13px; }
+.replay-seat { padding: 3px 8px; border-radius: 6px; display: flex; align-items: center; gap: 6px; }
+.replay-seat.acting { background: var(--accent-soft); color: var(--accent); }
+.chat .msg { padding: 8px 10px; border-radius: 8px; font-size: 13px; line-height: 1.55; }
+.chat .msg.user { background: var(--panel-2); align-self: flex-end; max-width: 85%; }
+.chat .msg.assistant { background: var(--bg-2); border-left: 3px solid var(--accent); }
+.decision-row { cursor: pointer; padding: 3px 0; border-bottom: 1px solid var(--border); }
+.hh { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; background: var(--bg-2); padding: 10px; border-radius: 6px; max-height: 360px; overflow: auto; }

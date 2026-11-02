@@ -1,0 +1,109 @@
+/* Design tokens. Dark by default; the trainer is used for long sessions. */
+:root {
+  --bg: #0d1117;
+  --bg-2: #131a23;
+  --panel: #161e29;
+  --panel-2: #1c2633;
+  --border: #263241;
+  --text: #e6edf3;
+  --text-2: #9aa7b4;
+  --text-3: #6b7785;
+  --accent: #2dd4bf;
+  --accent-2: #14b8a6;
+  --accent-soft: rgba(45, 212, 191, 0.12);
+  --good: #4ade80;
+  --ok: #a3e635;
+  --warn: #fbbf24;
+  --bad: #f87171;
+  --worse: #ef4444;
+  --felt: #0f3d32;
+  --felt-2: #0b2e26;
+  --felt-rim: #1f5a4b;
+  /* action colours used in strategy bars and range grids */
+  --act-fold: #3b82f6;
+  --act-check: #10b981;
+  --act-call: #10b981;
+  --act-bet-s: #f59e0b;
+  --act-bet-m: #f97316;
+  --act-bet-l: #ef4444;
+  --act-allin: #b91c1c;
+  /* four-colour deck */
+  --suit-s: #e6edf3;
+  --suit-h: #ef4444;
+  --suit-d: #3b82f6;
+  --suit-c: #22c55e;
+  --card-bg: #f8fafc;
+  --card-text: #0f172a;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --sans: 'Inter', system-ui, -apple-system, Segoe UI, sans-serif;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+h1, h2, h3, h4 { margin: 0 0 0.5em; line-height: 1.25; font-weight: 600; }
+h1 { font-size: 22px; }
+h2 { font-size: 18px; }
+h3 { font-size: 15px; }
+p { margin: 0 0 0.8em; }
+code, .mono { font-family: var(--mono); font-size: 0.92em; }
+
+button, .btn {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 7px 12px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+button:hover:not(:disabled) { background: #223042; border-color: #33465c; }
+button:disabled { opacity: 0.45; cursor: default; }
+button.primary { background: var(--accent-2); border-color: var(--accent-2); color: #042f2e; font-weight: 600; }
+button.primary:hover:not(:disabled) { background: var(--accent); }
+button.ghost { background: transparent; border-color: transparent; }
+button.danger { border-color: #7f1d1d; color: #fecaca; }
+
+input, select, textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+}
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent-2); }
+label { color: var(--text-2); font-size: 12px; }
+
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+.muted { color: var(--text-2); }
+.faint { color: var(--text-3); }
+.row { display: flex; gap: 10px; align-items: center; }
+.col { display: flex; flex-direction: column; gap: 10px; }
+.grow { flex: 1; }
+.wrap { flex-wrap: wrap; }
+.tag { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--border); color: var(--text-2); font-size: 12px; }
+.pill-good { color: var(--good); }
+.pill-warn { color: var(--warn); }
+.pill-bad { color: var(--bad); }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+th { color: var(--text-2); font-weight: 500; font-size: 12px; }
+.kbd { font-family: var(--mono); font-size: 11px; padding: 1px 5px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; color: var(--text-2); }
+.page { padding: 24px 28px; max-width: 1280px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } .page { padding: 16px; } }

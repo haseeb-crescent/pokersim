@@ -1,0 +1,32 @@
+.pcards { display: inline-flex; gap: 4px; }
+.pcard { display: inline-flex; flex-direction: column; align-items: center; justify-content: center; background: var(--card-bg); color: var(--card-text); border-radius: 6px; font-weight: 700; line-height: 1; box-shadow: 0 1px 3px rgba(0,0,0,0.45); user-select: none; }
+.pcard.sm { width: 26px; height: 36px; font-size: 13px; }
+.pcard.md { width: 40px; height: 56px; font-size: 18px; }
+.pcard.lg { width: 54px; height: 76px; font-size: 24px; }
+.pcard-suit { font-size: 0.9em; margin-top: 2px; }
+.pcard.suit-h { background: #fee2e2; color: #b91c1c; }
+.pcard.suit-d { background: #dbeafe; color: #1d4ed8; }
+.pcard.suit-c { background: #dcfce7; color: #15803d; }
+.pcard.suit-s { background: #f1f5f9; color: #0f172a; }
+.pcard.back { background: repeating-linear-gradient(45deg, #134e4a, #134e4a 4px, #0f3d3a 4px, #0f3d3a 8px); border: 2px solid #f1f5f9; }
+.ctext { font-weight: 600; font-family: var(--mono); }
+.ctext.suit-h { color: var(--suit-h); }
+.ctext.suit-d { color: var(--suit-d); }
+.ctext.suit-c { color: var(--suit-c); }
+.ctext.suit-s { color: var(--suit-s); }
+
+.rg { display: grid; gap: 1px; background: var(--border); border: 1px solid var(--border); width: max-content; }
+.rg-cell { position: relative; background: var(--bg-2); cursor: default; overflow: hidden; }
+.rg-pair { background: #18212d; }
+.rg-fill { position: absolute; left: 0; right: 0; bottom: 0; }
+.rg-band { position: absolute; top: 0; bottom: 0; }
+.rg-label { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600; color: rgba(255,255,255,0.85); text-shadow: 0 1px 2px rgba(0,0,0,0.8); pointer-events: none; }
+.rg-hl { outline: 2px solid #fff; outline-offset: -2px; z-index: 1; }
+
+.sbar { position: relative; border-radius: 3px; overflow: hidden; background: var(--bg-2); }
+.sbar span { position: absolute; top: 0; bottom: 0; }
+.sbar-legend { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; font-size: 12px; color: var(--text-2); }
+.sbar-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+
+.term { color: inherit; border-bottom: 1px dotted var(--accent); cursor: help; }
+.term:hover { color: var(--accent); text-decoration: none; }

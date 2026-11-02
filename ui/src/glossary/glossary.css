@@ -1,0 +1,45 @@
+/* Term links and tooltips (used app-wide) */
+.term { color: inherit; border-bottom: 1px dotted var(--accent); cursor: help; }
+.term:hover { color: var(--accent); text-decoration: none; }
+.term-tip {
+  position: fixed; z-index: 1000; pointer-events: none;
+  background: var(--panel-2); border: 1px solid #33465c; border-radius: var(--radius-sm);
+  padding: 10px 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  font-size: 13px; line-height: 1.45; color: var(--text);
+}
+.term-tip-title { font-weight: 600; margin-bottom: 4px; color: var(--accent); }
+.term-tip-def { color: var(--text); }
+.term-tip-more { margin-top: 6px; font-size: 11px; color: var(--text-3); }
+
+/* Glossary page */
+.gl { max-width: 1100px; }
+.gl-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 14px; }
+.gl-head p { margin: 0; }
+.gl-search { width: 320px; max-width: 100%; }
+.gl-layout { display: grid; grid-template-columns: 200px 1fr; gap: 24px; align-items: start; }
+.gl-toc { position: sticky; top: 16px; display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.gl-toc a { color: var(--text-2); padding: 4px 8px; border-radius: var(--radius-sm); display: flex; justify-content: space-between; }
+.gl-toc a:hover { background: var(--panel); color: var(--text); text-decoration: none; }
+.gl-toc .n { color: var(--text-3); font-size: 12px; }
+.gl-cat { margin-bottom: 28px; scroll-margin-top: 16px; }
+.gl-cat > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-2); border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-bottom: 12px; }
+.gl-entries { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+.gl-entry { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; scroll-margin-top: 80px; transition: border-color 0.3s, box-shadow 0.3s; }
+.gl-entry h3 { margin: 0 0 2px; font-size: 15px; }
+.gl-entry h3 a { color: var(--text); }
+.gl-alias { font-size: 12px; color: var(--text-3); margin-bottom: 8px; }
+.gl-def { margin: 0 0 10px; }
+.gl-ex { background: var(--bg-2); border-left: 2px solid var(--accent-2); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; padding: 8px 10px; font-size: 13px; color: var(--text-2); margin-bottom: 10px; }
+.gl-ex b { color: var(--text); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-right: 6px; }
+.gl-foot { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; }
+.gl-foot .tag:hover { border-color: var(--accent-2); color: var(--accent); text-decoration: none; }
+.gl-learn { margin-left: auto; font-weight: 500; }
+.gl-entry.hl { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); animation: gl-pulse 1.6s ease-out 1; }
+@keyframes gl-pulse { 0% { box-shadow: 0 0 0 0 rgba(45, 212, 191, 0.55); } 100% { box-shadow: 0 0 0 3px var(--accent-soft); } }
+.gl-empty { padding: 24px; text-align: center; }
+.gl-missing { margin-bottom: 14px; border-color: #5b4a1a; }
+@media (max-width: 1000px) {
+  .gl-layout { grid-template-columns: 1fr; }
+  .gl-toc { position: static; flex-direction: row; flex-wrap: wrap; gap: 4px; }
+  .gl-toc a { background: var(--panel); border: 1px solid var(--border); gap: 6px; }
+}
