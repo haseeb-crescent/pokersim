@@ -90,8 +90,32 @@ export const GRADE_COLORS: Record<string, string> = {
   Pending: 'var(--text-3)',
 }
 
-function MixTable({ actions, chosen, showEv }: { actions: ActionMix[]; chosen?: string; showEv: boolean }) {
+function MixTable({ actions, chosen, showEv, model = false }: { actions: ActionMix[]; chosen?: string; showEv: boolean; model?: boolean }) {
   const bestEv = Math.max(...actions.map((a) => a.ev_bb ?? -Infinity))
+  if (model)
+    return (
+      <table className="mix">
+        <thead>
+          <tr>
+            <th>Option</th>
+            <th title="One-step model EV relative to folding now, in big blinds">Model EV (bb)</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {actions.map((a, i) => (
+            <tr key={a.label} className={a.label === chosen ? 'chosen' : ''}>
+              <td>
+                <i className="dot" style={{ background: actionColor(a.label, i, actions.length) }} />
+                {a.label}
+              </td>
+              <td className={a.ev_bb === bestEv ? 'best-ev' : ''}>{a.ev_bb === null ? '–' : a.ev_bb.toFixed(2)}</td>
+              <td className="faint small">{a.ev_bb === bestEv ? 'best' : ''}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    )
   return (
     <table className="mix">
       <thead>
@@ -148,7 +172,7 @@ export function GradeCard({ g, compact = false }: { g: DecisionGrade; compact?: 
             </span>
             {g.best && (
               <span>
-                · {g.kind === 'preflop_chart' ? 'Chart' : 'Solver'} prefers <b>{g.best}</b>
+                · {g.kind === 'preflop_chart' ? 'Chart' : g.kind === 'heuristic' ? 'Model' : 'Solver'} prefers <b>{g.best}</b>
               </span>
             )}
             {g.board.length > 0 && (
@@ -157,7 +181,18 @@ export function GradeCard({ g, compact = false }: { g: DecisionGrade; compact?: 
               </span>
             )}
           </div>
-          {g.actions.length > 0 && <MixTable actions={g.actions} chosen={g.chosen} showEv={showEv} />}
+          {g.heuristic && (
+            <div className="offchart">
+              <b>Off-chart: heuristic grade.</b> {g.heuristic.reason}.
+              <div className="small">
+                Options compared with a one-step model against the actual range{g.heuristic.ranges.length > 1 ? 's' : ''}:{' '}
+                {g.heuristic.ranges.map((r) => `${r.profile} (${r.position}) ${r.percent}% of hands`).join(', ')}
+                {g.heuristic.fold_to_raise !== null && <> · modelled fold to a raise {pct(g.heuristic.fold_to_raise)}</>}. Not a solver or chart result.
+              </div>
+              {g.heuristic.sizing && <div className="small">Sizing: {g.heuristic.sizing}.</div>}
+            </div>
+          )}
+          {g.actions.length > 0 && <MixTable actions={g.actions} chosen={g.chosen} showEv={showEv} model={g.kind === 'heuristic'} />}
           {g.off_chart && (
             <div className="offchart">
               <b>Off-chart:</b> {g.off_chart.action} is 0% in the chart — the chart says <b>{g.off_chart.chart}</b>.
@@ -195,7 +230,7 @@ export function GradeCard({ g, compact = false }: { g: DecisionGrade; compact?: 
             </div>
           )}
           <Explanation g={g} />
-          {g.note && g.kind !== 'unsolved' && <p className="note">{g.note}</p>}
+          {g.note && g.kind !== 'unsolved' && g.kind !== 'heuristic' && <p className="note">{g.note}</p>}
           {g.exploit && (
             <div className="exploit">
               <div className="exploit-title">

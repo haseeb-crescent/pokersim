@@ -48,3 +48,10 @@ export const bb = (chips: number) => {
 
 export const pct = (x: number | null | undefined, digits = 0) =>
   x === null || x === undefined ? '–' : (100 * x).toFixed(digits) + '%'
+
+/** Dollars for a chip amount at `bbDollars` per big blind, signed when `sign` is set. */
+export function dollars(chips: number, bbDollars: number, sign = false): string {
+  const v = (chips / 100) * bbDollars
+  const s = Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  return (v < 0 ? '-' : sign && v > 0 ? '+' : '') + '$' + s
+}

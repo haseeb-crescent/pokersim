@@ -23,7 +23,11 @@ use strategy::postflop::grids::grids;
 use strategy::postflop::hand::{HandSolve, StreetSolve, Viewer};
 use strategy::postflop::locked::lock_profile;
 use strategy::postflop::*;
+use strategy::preflop::charts::Charts;
 use strategy::preflop::game::postflop_rank;
+
+/// Below this effective stack (bb) no preflop chart is close enough: heuristic grades.
+pub const MIN_CHART_BB: f64 = 20.0;
 
 pub struct HeroDecision {
     pub hand_id: i64,
@@ -36,6 +40,15 @@ pub struct HeroDecision {
     pub street_solve: Option<Arc<StreetSolve>>,
     /// villain seat and profile when heads-up
     pub villain: Option<(usize, Profile)>,
+    /// every seat's bot profile (None for the hero)
+    pub profiles: Vec<Option<Profile>>,
+    /// preflop chart for the hero's effective stack, and its depth in bb
+    pub charts: Arc<Charts>,
+    pub chart_depth: u32,
+    /// effective stack (bb) at the start of the hand
+    pub eff_bb: f64,
+    /// note when postflop solves ran at a stack-depth bucket other than the real stack
+    pub depth_note: Option<String>,
 }
 
 fn bb(chips: f64) -> f64 {
@@ -73,24 +86,26 @@ pub fn grade(res: &Resources, d: &HeroDecision, want_exploit: bool) -> Value {
     if let (Some(hs), Some(ss), true) = (&d.hand_solve, &d.street_solve, live == 2) {
         return match grade_postflop(res, d, hs, ss, want_exploit) {
             Ok(v) => v,
-            Err(e) => unsolved(res, d, &format!("the solver was unavailable for this spot ({e})")),
+            Err(e) => unsolved(d, &format!("the solver was unavailable for this spot ({e})")),
         };
     }
     let reason = if live > 2 {
         format!("{live} players are in the pot, and there is no solver solution for multiway pots")
-    } else if let Some(r) = off_chart_reason(res, &d.public, d.hero_seat) {
+    } else if d.eff_bb < MIN_CHART_BB {
+        format!("the effective stack is only {:.0}bb, below the {MIN_CHART_BB:.0}bb the solver library covers", d.eff_bb)
+    } else if let Some(r) = off_chart_reason(&d.charts, &d.public, d.hero_seat) {
         r
     } else {
         "the pot was multiway on the flop, so there are no solver ranges for the later streets".to_string()
     };
-    unsolved(res, d, &reason)
+    unsolved(d, &reason)
 }
 
 /// Why a hand has no solver ranges: the first preflop action the chart tree does not contain.
-fn off_chart_reason(res: &Resources, st: &PublicState, hero: usize) -> Option<String> {
+pub(crate) fn off_chart_reason(charts: &Charts, st: &PublicState, hero: usize) -> Option<String> {
     let codes = st.preflop_codes();
     let pre: Vec<_> = st.actions.iter().filter(|a| a.street == Street::Preflop).collect();
-    let i = match res.charts.map_key(&codes) {
+    let i = match charts.map_key(&codes) {
         Some((_, changed)) => changed.iter().position(|&c| c)?,
         None => return Some("the preflop action went outside the chart tree, so there are no solver ranges for this hand".into()),
     };
@@ -152,12 +167,21 @@ fn chosen_code(act: Act, legal: &Legal) -> char {
 
 fn grade_preflop(res: &Resources, d: &HeroDecision) -> Value {
     let st = &d.public;
+    let charts = &*d.charts;
     let legal = st.legal.as_ref().unwrap();
     let pos = st.positions[d.hero_seat];
     let codes = st.preflop_codes();
-    let Some((node, key)) = res.charts.lookup(&codes).filter(|(n, _)| n.player == pos) else {
-        let reason = off_chart_reason(res, st, d.hero_seat).unwrap_or_else(|| "this preflop line is outside the chart tree".into());
-        return unsolved(res, d, &reason);
+    // an earlier action left the chart tree: no chart node describes this spot, so never grade
+    // against the nearest one (an isolation raise over a limp would count as a 3-bet)
+    if d.eff_bb < MIN_CHART_BB {
+        let reason = format!("the effective stack is {:.0}bb, below the shallowest preflop chart ({}bb)", d.eff_bb, d.chart_depth);
+        return crate::heuristic::grade_heuristic(res, d, &reason);
+    }
+    if let Some(reason) = crate::heuristic::line_off_chart(charts, st, d.hero_seat) {
+        return crate::heuristic::grade_heuristic(res, d, &reason);
+    }
+    let Some((node, key)) = charts.lookup(&codes).filter(|(n, _)| n.player == pos) else {
+        return crate::heuristic::grade_heuristic(res, d, "this preflop line is outside the chart tree");
     };
     let class = class_of(d.hole[0], d.hole[1]);
     let labels: Vec<String> = node
@@ -179,7 +203,7 @@ fn grade_preflop(res: &Resources, d: &HeroDecision) -> Value {
         .iter()
         .map(|f| {
             let w: Vec<f64> = (0..n_classes).map(|h| class_combo_count(h) as f64).collect();
-            let reach = res.charts.range_along(&key, pos);
+            let reach = charts.range_along(&key, pos);
             let tot: f64 = (0..n_classes).map(|h| w[h] * reach[h] as f64).sum();
             if tot > 0.0 { (0..n_classes).map(|h| w[h] * reach[h] as f64 * f[h] as f64).sum::<f64>() / tot } else { 0.0 }
         })
@@ -208,7 +232,7 @@ fn grade_preflop(res: &Resources, d: &HeroDecision) -> Value {
     // equity against the last raiser's chart range (class level, card removal included)
     if let Some(raiser) = st.actions.iter().rev().find(|a| a.street == Street::Preflop && matches!(a.kind, ActKind::Raise | ActKind::Bet)).map(|a| a.seat) {
         if raiser != d.hero_seat {
-            let r = res.charts.range_along(&key, st.positions[raiser]);
+            let r = charts.range_along(&key, st.positions[raiser]);
             let (mut num, mut den) = (0.0f64, 0.0f64);
             for h2 in 0..NUM_CLASSES {
                 let k = res.eq.k(class, h2) as f64 * r[h2] as f64;
@@ -222,7 +246,11 @@ fn grade_preflop(res: &Resources, d: &HeroDecision) -> Value {
         }
     }
     let mut note = "Preflop is graded by chart frequency: the charts carry no EVs.".to_string();
-    if res.charts.map_key(&codes).map(|(_, ch)| ch.iter().any(|&c| c)).unwrap_or(false) {
+    if d.chart_depth != 100 {
+        note.push_str(&format!(" Used the {}bb chart (effective stack {:.0}bb), not the 100bb one.", d.chart_depth, d.eff_bb));
+        facts.notes.push(format!("graded against the {}bb preflop chart because the effective stack is {:.0}bb", d.chart_depth, d.eff_bb));
+    }
+    if charts.map_key(&codes).map(|(_, ch)| ch.iter().any(|&c| c)).unwrap_or(false) {
         note.push_str(" Earlier action was outside the chart tree (for example an open-limp, treated as an open), so this uses the nearest chart node.");
     }
     let off_chart = if chosen_i.is_none() {
@@ -383,6 +411,9 @@ fn grade_postflop(res: &Resources, d: &HeroDecision, hs: &Arc<HandSolve>, ss: &A
     }
     let chosen = to_line_action(d.act, legal);
     let mut notes: Vec<String> = choice.notes.clone();
+    if let Some(n) = &d.depth_note {
+        notes.push(n.clone());
+    }
     if choice.spot.spec.bunching.is_some() {
         notes.push("river solved with the bunching effect (card removal from the players who folded preflop)".into());
     }
@@ -532,7 +563,7 @@ fn exploit_view(spot: &Arc<Spot>, line: &[LineAction], view: &NodeView, hero_pla
     })
 }
 
-fn unsolved(res: &Resources, d: &HeroDecision, reason: &str) -> Value {
+fn unsolved(d: &HeroDecision, reason: &str) -> Value {
     let st = &d.public;
     let legal = st.legal.as_ref().unwrap();
     let mut facts = base_facts(d);
@@ -542,7 +573,7 @@ fn unsolved(res: &Resources, d: &HeroDecision, reason: &str) -> Value {
     // postflop action
     let mut players = vec![engine::equity::Holding::Hand(d.hole[0], d.hole[1])];
     for &o in &opps {
-        let mut r = if st.street == Street::Preflop { estimated_range_preflop(st, o, &res.charts) } else { estimated_range(st, o, &res.charts) };
+        let mut r = if st.street == Street::Preflop { estimated_range_preflop(st, o, &d.charts) } else { estimated_range(st, o, &d.charts) };
         r.remove_dead((1u64 << d.hole[0]) | (1u64 << d.hole[1]));
         if r.is_empty() {
             r = engine::Range::full();

@@ -27,6 +27,9 @@ pub struct Profile {
     pub postflop_call: f64,
     /// the Hunter adapts to the hero's observed tendencies with node-locked solves
     pub hunter: bool,
+    /// Session mode: tops back up to 100bb when below it (regs); otherwise lets the stack ride
+    #[serde(default)]
+    pub top_up: bool,
     /// target stat signature (percent), checked by the bot-vs-bot calibration test
     pub expected: Vec<(String, f64)>,
 }
@@ -63,6 +66,7 @@ fn p(id: &str, name: &str, desc: &str, w: f64, limp: f64, agg: f64, ftp: f64, bl
         size_bias: size,
         postflop_call: call,
         hunter: false,
+        top_up: matches!(id, "gto" | "lag"),
         expected: expected.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
     }
 }

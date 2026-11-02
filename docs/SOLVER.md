@@ -128,6 +128,23 @@ less), until the range-wide frequency matches. The exploit view locks a bot's pr
 (its distortion applied to every hand) at its next decision and reads the hero's best
 response. Locked solves are never cached.
 
+## 8. Stack depths other than 100bb (Session mode)
+
+The postflop spec is the same tree at a different depth: the effective stack goes into the spec,
+and therefore into the cache key.
+
+- Within 10% of 100bb, the spot is solved at exactly 100bb, so the overnight library and cache
+  apply. The coach notes the real effective stack.
+- Otherwise, the depth is rounded to a bucket: 5bb steps below 50bb, 10bb up to 100bb, 20bb
+  above. The pot is real and the remaining stack is shifted by the rounding, so the bucket is
+  never more than about 12% from the real stack. Spots at a similar depth share cache entries,
+  so the library grows per bucket as you play.
+- Ranges come from the preflop chart nearest the effective stack (see PREFLOP.md).
+- Under 20bb effective, nothing is solved, and the coach shows the unsolved view.
+- Measured once: a 160bb single-raised flop took about 3 minutes to reach the final target
+  (0.74% of pot), with other solves running. That is several times a 100bb flop, because more
+  raises fit before all-in. Bots still act from the running solve after at most 6 s.
+
 ## Vendored solver patches
 
 See `vendor/PATCHES.md`.

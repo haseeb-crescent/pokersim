@@ -1,4 +1,5 @@
-//! SQLite logbook: sessions, hands (full record JSON), graded decisions, Hunter exploits.
+//! SQLite logbook: sessions, hands (full record JSON), graded decisions, Hunter exploits, and
+//! Session-mode stacks and buy-ins.
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
@@ -61,6 +62,23 @@ CREATE TABLE IF NOT EXISTS exploits (
     samples INTEGER,
     note TEXT
 );
+CREATE TABLE IF NOT EXISTS cash_state (
+    session_id INTEGER PRIMARY KEY,
+    stacks TEXT NOT NULL,
+    button INTEGER NOT NULL,
+    closed INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ledger (
+    id INTEGER PRIMARY KEY,
+    session_id INTEGER NOT NULL,
+    seat INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    amount INTEGER NOT NULL,
+    hand_no INTEGER,
+    at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ledger_session ON ledger(session_id, seat);
 "#;
 
 pub fn now() -> i64 {
@@ -274,5 +292,168 @@ impl Db {
         .unwrap()
         .filter_map(|x| x.ok())
         .collect()
+    }
+
+    pub fn session_config(&self, id: i64) -> Option<Value> {
+        let c = self.conn.lock().unwrap();
+        c.query_row("SELECT config FROM sessions WHERE id = ?1", params![id], |r| r.get::<_, String>(0))
+            .optional()
+            .unwrap()
+            .and_then(|s| serde_json::from_str(&s).ok())
+    }
+
+    /// Session mode: the saved stacks (seat order), button and closed flag.
+    pub fn cash_state(&self, session_id: i64) -> Option<(Vec<i64>, usize, bool)> {
+        let c = self.conn.lock().unwrap();
+        c.query_row("SELECT stacks, button, closed FROM cash_state WHERE session_id = ?1", params![session_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))
+        })
+        .optional()
+        .unwrap()
+        .and_then(|(s, b, closed)| Some((serde_json::from_str(&s).ok()?, b as usize, closed != 0)))
+    }
+
+    pub fn save_cash_state(&self, session_id: i64, stacks: &[i64], button: usize, closed: bool) {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "INSERT INTO cash_state (session_id, stacks, button, closed, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(session_id) DO UPDATE SET stacks = excluded.stacks, button = excluded.button,
+             closed = MAX(cash_state.closed, excluded.closed), updated_at = excluded.updated_at",
+            params![session_id, serde_json::to_string(stacks).unwrap(), button as i64, closed as i64, now()],
+        )
+        .unwrap();
+    }
+
+    pub fn add_ledger(&self, session_id: i64, seat: usize, kind: &str, amount: i64, hand_no: i64) {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "INSERT INTO ledger (session_id, seat, kind, amount, hand_no, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![session_id, seat as i64, kind, amount, hand_no, now()],
+        )
+        .unwrap();
+    }
+
+    /// Chips a seat has bought in for in this session (buy-in, rebuys and top-ups).
+    pub fn buyins(&self, session_id: i64, seat: usize) -> i64 {
+        let c = self.conn.lock().unwrap();
+        c.query_row("SELECT COALESCE(SUM(amount), 0) FROM ledger WHERE session_id = ?1 AND seat = ?2", params![session_id, seat as i64], |r| r.get(0))
+            .unwrap_or(0)
+    }
+
+    /// Hero profit (chips) and buy-ins over every Session-mode session, with `current` as this
+    /// session's live profit (its saved stack can lag a hand behind).
+    pub fn lifetime_cash(&self, current_session: i64, current: i64) -> (i64, i64) {
+        let rows = self.cash_sessions();
+        let mut profit = current;
+        let mut buyins = 0;
+        for r in &rows {
+            buyins += r["buyins"].as_i64().unwrap_or(0);
+            if r["id"].as_i64() != Some(current_session) {
+                profit += r["profit"].as_i64().unwrap_or(0);
+            }
+        }
+        (profit, buyins)
+    }
+
+    /// Every Session-mode session with the hero's stack, buy-ins, profit and hand count.
+    pub fn cash_sessions(&self) -> Vec<Value> {
+        let c = self.conn.lock().unwrap();
+        let mut st = c
+            .prepare(
+                "SELECT cs.session_id, cs.stacks, cs.closed, cs.updated_at, s.started_at, s.config,
+                        (SELECT COALESCE(SUM(amount), 0) FROM ledger l WHERE l.session_id = cs.session_id AND l.seat = 0),
+                        (SELECT COUNT(*) FROM hands h WHERE h.session_id = cs.session_id AND h.complete = 1),
+                        (SELECT COALESCE(SUM(hero_net_adj), 0) FROM hands h WHERE h.session_id = cs.session_id AND h.complete = 1)
+                 FROM cash_state cs JOIN sessions s ON s.id = cs.session_id ORDER BY cs.session_id DESC",
+            )
+            .unwrap();
+        st.query_map([], |r| {
+            let stacks: Vec<i64> = serde_json::from_str(&r.get::<_, String>(1)?).unwrap_or_default();
+            let config: Value = serde_json::from_str(&r.get::<_, String>(5)?).unwrap_or(Value::Null);
+            let stack = stacks.first().copied().unwrap_or(0);
+            let buyins: i64 = r.get(6)?;
+            Ok(serde_json::json!({
+                "id": r.get::<_, i64>(0)?, "closed": r.get::<_, i64>(2)? != 0, "updated_at": r.get::<_, i64>(3)?,
+                "started_at": r.get::<_, i64>(4)?, "lineup": config["lineup"], "bb_dollars": config["bb_dollars"],
+                "stack": stack, "buyins": buyins, "profit": stack - buyins,
+                "hands": r.get::<_, i64>(7)?, "ev_profit": r.get::<_, f64>(8)?,
+            }))
+        })
+        .unwrap()
+        .filter_map(|x| x.ok())
+        .collect()
+    }
+
+    /// Cashes out every open Session-mode session (a new one replaces them).
+    pub fn close_open_cash_sessions(&self) {
+        let c = self.conn.lock().unwrap();
+        c.execute("UPDATE cash_state SET closed = 1, updated_at = ?1 WHERE closed = 0", params![now()]).unwrap();
+    }
+
+    pub fn close_cash_session(&self, session_id: i64) {
+        let c = self.conn.lock().unwrap();
+        c.execute("UPDATE cash_state SET closed = 1, updated_at = ?2 WHERE session_id = ?1", params![session_id, now()]).unwrap();
+    }
+
+    /// Cumulative hero results per hand (chips): actual and all-in-adjusted, for one Session-mode
+    /// session or (None) all of them in order.
+    pub fn cash_graph(&self, session: Option<i64>) -> Vec<Value> {
+        let c = self.conn.lock().unwrap();
+        let mut st = c
+            .prepare(
+                "SELECT h.session_id, h.hand_no, h.hero_net, h.hero_net_adj FROM hands h
+                 JOIN cash_state cs ON cs.session_id = h.session_id
+                 WHERE h.complete = 1 AND (?1 IS NULL OR h.session_id = ?1) ORDER BY h.id",
+            )
+            .unwrap();
+        let mut net = 0i64;
+        let mut adj = 0f64;
+        st.query_map(params![session], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, f64>(3)?)))
+            .unwrap()
+            .filter_map(|x| x.ok())
+            .enumerate()
+            .map(|(i, (sid, hand_no, n, a))| {
+                net += n;
+                adj += a;
+                serde_json::json!({"i": i + 1, "session_id": sid, "hand_no": hand_no, "net": net, "ev": adj})
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod cash_tests {
+    use super::*;
+
+    #[test]
+    fn session_mode_stacks_and_profit_survive_a_reopen() {
+        let dir = std::env::temp_dir().join(format!("pokersim-cash-{}", std::process::id()));
+        let path = dir.join("t.sqlite");
+        let _ = std::fs::remove_file(&path);
+        let id = {
+            let db = Db::open(&path).unwrap();
+            let id = db.new_session(&serde_json::json!({"lineup": ["gto"], "bb_dollars": 0.5}), "session");
+            for s in 0..6 {
+                db.add_ledger(id, s, "buy-in", 10_000, 0);
+            }
+            db.add_ledger(id, 0, "rebuy", 10_000, 7);
+            db.add_ledger(id, 0, "top-up", 2_500, 9);
+            db.save_cash_state(id, &[13_000, 9_000, 10_000, 10_000, 10_000, 47_500], 3, false);
+            id
+        };
+        // a restart: everything comes back from disk
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.cash_state(id), Some((vec![13_000, 9_000, 10_000, 10_000, 10_000, 47_500], 3, false)));
+        assert_eq!(db.buyins(id, 0), 22_500);
+        let s = &db.cash_sessions()[0];
+        assert_eq!(s["profit"], -9_500);
+        assert_eq!(s["bb_dollars"], 0.5);
+        // live profit replaces the saved one for the running session
+        assert_eq!(db.lifetime_cash(id, -9_000), (-9_000, 22_500));
+        // closing is sticky: a later save without close does not reopen it
+        db.close_cash_session(id);
+        db.save_cash_state(id, &[13_000, 9_000, 10_000, 10_000, 10_000, 47_500], 3, false);
+        assert!(db.cash_state(id).unwrap().2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

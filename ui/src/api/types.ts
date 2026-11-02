@@ -70,6 +70,45 @@ export interface TableState {
   hero_net: number // chips this session
   hands_played: number
   last_result: HandResultSummary | null
+  deal_pause_ms?: number
+  hero_chart_bb?: number // preflop chart depth used for the hero this hand
+  cash?: CashInfo
+}
+
+/** Session mode: the hero's money. Chips are 1/100 bb. */
+export interface CashInfo {
+  mode: 'training' | 'session'
+  session_id?: number
+  bb_dollars?: number
+  stack?: number
+  buyins?: number
+  session_profit?: number
+  lifetime_profit?: number
+  lifetime_buyins?: number
+  busted?: boolean
+  pending_topup?: boolean
+}
+
+export interface CashSession {
+  id: number
+  closed: boolean
+  started_at: number
+  updated_at: number
+  lineup: string[]
+  bb_dollars: number
+  stack: number
+  buyins: number
+  profit: number
+  ev_profit: number
+  hands: number
+}
+
+export interface CashSummary {
+  sessions: CashSession[]
+  lifetime: { profit: number; ev_profit: number; buyins: number; hands: number; sessions: number }
+  open: CashSession | null
+  running: number | null
+  graph: { i: number; session_id: number; hand_no: number; net: number; ev: number }[] // cumulative chips
 }
 
 export interface HandResultSummary {
@@ -115,7 +154,7 @@ export interface DecisionGrade {
   street: Street
   spot: string // "BTN vs BB · single-raised pot · flop · IP vs check"
   spot_key: string // aggregation key for leaks, e.g. "SRP|IP|flop|vs_check"
-  kind: 'solver' | 'preflop_chart' | 'unsolved'
+  kind: 'solver' | 'preflop_chart' | 'unsolved' | 'heuristic'
   hero_hand: string
   board: string[]
   actions: ActionMix[]
@@ -133,6 +172,14 @@ export interface DecisionGrade {
   off_chart?: { action: string; chart: string; message: string; leaves_chart: boolean } | null
   /** why an unsolved decision has no grade */
   unsolved_reason?: string | null
+  /** off-chart heuristic grade: one-step model against the opponents' actual ranges */
+  heuristic?: {
+    label: string
+    reason: string
+    ranges: { position: string; profile: string; combos: number; percent: number }[]
+    sizing: string | null
+    fold_to_raise: number | null
+  } | null
   /** 'pending' while the coach is writing the explanation */
   explanation_status?: 'pending' | 'none'
   explanation_error?: string | null
@@ -150,6 +197,7 @@ export type ServerMsg =
   | { type: 'grade'; grade: DecisionGrade }
   | { type: 'explanation'; hand_id: number; index: number; text: string | null; error?: string }
   | { type: 'hand_complete'; summary: HandResultSummary }
+  | { type: 'cash'; cash: CashInfo }
   | { type: 'error'; message: string }
 
 export type ClientMsg =
@@ -158,6 +206,9 @@ export type ClientMsg =
   | { type: 'pause'; paused: boolean }
   | { type: 'set_delay'; ms: number }
   | { type: 'set_coach'; mode: CoachMode }
+  | { type: 'set_deal_pause'; ms: number }
+  | { type: 'rebuy' }
+  | { type: 'top_up' }
 
 export interface BotProfile {
   id: string
@@ -171,9 +222,12 @@ export interface SessionConfig {
   lineup: string[] // 5 profile ids, seats after the hero
   coach_mode: CoachMode
   bot_delay_ms: number
-  rebuy: 'reset' | 'topup' | 'off'
   rake_pct: number
   rake_cap_bb: number
+  mode: 'training' | 'session'
+  deal_pause_ms: number
+  bb_dollars: number
+  resume: number | null
 }
 
 // ---- lab ----

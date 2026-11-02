@@ -20,6 +20,7 @@ use strategy::bots::view::{positions, PublicState, POS_NAMES};
 use strategy::coach::facts::board_texture;
 use strategy::postflop::grids::grids;
 use strategy::postflop::hand::HandSolve;
+use strategy::postflop::fmt_bb;
 use strategy::preflop::game::postflop_rank;
 use tokio::sync::mpsc;
 
@@ -30,7 +31,13 @@ pub enum TableCmd {
     Pause(bool),
     SetDelay(u64),
     SetCoach(String),
-    Stop,
+    SetDealPause(u64),
+    /// Session mode: buy back in for 100bb after busting
+    Rebuy,
+    /// Session mode: top the hero's stack up to 100bb before the next hand
+    TopUp,
+    /// leave the table; `close` cashes out a Session-mode session (otherwise it can resume)
+    Stop { close: bool },
 }
 
 fn d_coach() -> String {
@@ -82,26 +89,111 @@ pub struct SessionConfig {
     pub drill: Option<DrillSpec>,
     #[serde(default = "d_true")]
     pub auto_deal: bool,
+    /// "training" (stacks reset to 100bb every hand) or "session" (stacks carry over)
+    #[serde(default = "d_mode")]
+    pub mode: String,
+    /// pause between hands, ms
+    #[serde(default = "d_deal_pause")]
+    pub deal_pause_ms: u64,
+    /// dollars per big blind, for Session-mode profit
+    #[serde(default = "d_bb_dollars")]
+    pub bb_dollars: f64,
+    /// Session mode: resume this session id instead of starting a new one
+    #[serde(default)]
+    pub resume: Option<i64>,
+}
+
+fn d_mode() -> String {
+    "training".into()
+}
+fn d_deal_pause() -> u64 {
+    1500
+}
+fn d_bb_dollars() -> f64 {
+    1.0
+}
+
+pub const BUY_IN: i64 = 10_000;
+
+/// Postflop stack-depth bucket (chips): within 10% of 100bb the 100bb library; otherwise 5bb
+/// steps below 50bb, 10bb steps up to 100bb and 20bb steps above, so similar depths share solves
+/// and the bucket is never more than about 12% from the real stack.
+pub fn depth_bucket(eff: i64) -> i64 {
+    let bb = eff as f64 / 100.0;
+    if (bb - 100.0).abs() <= 10.0 {
+        return BUY_IN;
+    }
+    let step = if bb < 50.0 {
+        5.0
+    } else if bb < 100.0 {
+        10.0
+    } else {
+        20.0
+    };
+    let b = ((bb / step).round() * step).max(step);
+    (b * 100.0) as i64
 }
 
 struct Controls {
     paused: bool,
     delay: u64,
     coach: String,
+    deal_pause: u64,
+    pending_topup: bool,
+    pending_rebuy: bool,
 }
 
 impl Controls {
     fn json(&self) -> Value {
-        json!({"paused": self.paused, "bot_delay_ms": self.delay, "coach_mode": self.coach})
+        json!({"paused": self.paused, "bot_delay_ms": self.delay, "coach_mode": self.coach, "deal_pause_ms": self.deal_pause})
+    }
+
+    /// Applies a control command; returns Some(close) when the table should stop.
+    fn apply(&mut self, cmd: TableCmd) -> Option<bool> {
+        match cmd {
+            TableCmd::Pause(p) => self.paused = p,
+            TableCmd::SetDelay(ms) => self.delay = ms,
+            TableCmd::SetCoach(m) => self.coach = m,
+            TableCmd::SetDealPause(ms) => self.deal_pause = ms,
+            TableCmd::TopUp => self.pending_topup = true,
+            TableCmd::Rebuy => self.pending_rebuy = true,
+            TableCmd::Stop { close } => return Some(close),
+            TableCmd::Action(_) | TableCmd::NextHand => {}
+        }
+        None
     }
 }
 
-pub fn start_table(app: &App, cfg: SessionConfig) -> i64 {
+pub fn start_table(app: &App, mut cfg: SessionConfig) -> i64 {
     if let Some(old) = app.table.lock().unwrap().take() {
-        let _ = old.cmd.send(TableCmd::Stop);
+        let _ = old.cmd.send(TableCmd::Stop { close: false });
     }
-    let kind = if cfg.drill.is_some() { "drill" } else if cfg.hero_profile.is_some() { "botvbot" } else { "play" };
-    let session_id = app.db.new_session(&serde_json::to_value(&cfg).unwrap(), kind);
+    // resuming a Session-mode session keeps its lineup and stakes; the table settings are new
+    let resume = cfg.resume.filter(|&id| cfg.mode == "session" && app.db.cash_state(id).is_some_and(|c| !c.2));
+    if let Some(saved) = resume.and_then(|id| app.db.session_config(id)).and_then(|v| serde_json::from_value::<SessionConfig>(v).ok()) {
+        cfg.lineup = saved.lineup;
+        cfg.bb_dollars = saved.bb_dollars;
+        cfg.rake_pct = saved.rake_pct;
+        cfg.rake_cap_bb = saved.rake_cap_bb;
+        cfg.hero_profile = None;
+        cfg.drill = None;
+    }
+    let kind = if cfg.drill.is_some() {
+        "drill"
+    } else if cfg.hero_profile.is_some() {
+        "botvbot"
+    } else if cfg.mode == "session" {
+        "session"
+    } else {
+        "play"
+    };
+    if kind == "session" && resume.is_none() {
+        app.db.close_open_cash_sessions();
+    }
+    let session_id = match resume {
+        Some(id) => id,
+        None => app.db.new_session(&serde_json::to_value(&cfg).unwrap(), kind),
+    };
     let (tx, rx) = mpsc::unbounded_channel();
     let latest = Arc::new(Mutex::new(None));
     tokio::spawn(run_table(app.clone(), cfg, session_id, rx, latest.clone()));
@@ -114,6 +206,23 @@ fn broadcast(app: &App, latest: &Arc<Mutex<Option<Value>>>, msg: Value) {
         *latest.lock().unwrap() = Some(msg.clone());
     }
     let _ = app.tx.send(msg.to_string());
+}
+
+/// Session mode: updates the cash panel (stack, buy-ins, profit, bust and top-up flags) in the
+/// latest snapshot as well, so a reloaded page sees it.
+fn push_cash(app: &App, latest: &Arc<Mutex<Option<Value>>>, patch: Value) {
+    let mut cash = patch.clone();
+    if let Some(v) = latest.lock().unwrap().as_mut() {
+        let c = &mut v["state"]["cash"];
+        if !c.is_object() {
+            *c = json!({});
+        }
+        if let (Some(o), Value::Object(p)) = (c.as_object_mut(), patch) {
+            o.extend(p);
+        }
+        cash = c.clone();
+    }
+    let _ = app.tx.send(json!({"type": "cash", "cash": cash}).to_string());
 }
 
 const HERO: usize = 0;
@@ -282,6 +391,9 @@ fn drill_deck(app: &App, spec: &DrillSpec, cfg: &TableConfig, button: usize, rng
 }
 
 struct HandCtx {
+    /// postflop stack offset (bucket - real effective stack) and the note to show
+    depth_offset: i64,
+    depth_note: Option<String>,
     hs: Option<Arc<HandSolve>>,
     last_board: usize,
     decisions: usize,
@@ -309,15 +421,33 @@ fn sync_streets(h: &Hand, ctx: &mut HandCtx, app: &App, rake: (f64, f64)) {
     pair.sort_by_key(|&s| postflop_rank(st.positions[s]));
     let (oop, ip) = (pair[0], pair[1]);
     let pot = h.pot_total() as i32;
-    let stack = h.seats[oop].stack.min(h.seats[ip].stack) as i32;
+    // solve at a depth bucket: the 100bb library within 10%, else the nearest bucket
+    let eff_start = h.seats[oop].starting_stack.min(h.seats[ip].starting_stack);
+    if (eff_start as f64) < crate::coach::MIN_CHART_BB * 100.0 {
+        // very short stacks: no solver spot; the coach grades these as unsolved
+        return;
+    }
+    let bucket = depth_bucket(eff_start);
+    let stack = ((h.seats[oop].stack.min(h.seats[ip].stack) + bucket - eff_start).max(1)) as i32;
     if blen == 3 && ctx.hs.is_none() {
+        let (depth, charts) = app.res.charts_for(eff_start);
+        ctx.depth_offset = bucket - eff_start;
+        ctx.depth_note = if bucket != eff_start {
+            Some(if bucket == BUY_IN {
+                format!("solved with the 100bb library (real effective stack {})", fmt_bb(eff_start as i32))
+            } else {
+                format!("solved at the {} stack-depth bucket (real effective stack {}); preflop ranges from the {depth}bb chart", fmt_bb(bucket as i32), fmt_bb(eff_start as i32))
+            })
+        } else {
+            None
+        };
         let codes = st.preflop_codes();
-        let Some((key, changed)) = app.res.charts.map_key(&codes) else { return };
+        let Some((key, changed)) = charts.map_key(&codes) else { return };
         if changed.iter().any(|&c| c) {
             return;
         }
-        let g_oop = app.res.charts.range_along(&key, st.positions[oop]);
-        let g_ip = app.res.charts.range_along(&key, st.positions[ip]);
+        let g_oop = charts.range_along(&key, st.positions[oop]);
+        let g_ip = charts.range_along(&key, st.positions[ip]);
         if g_oop.iter().all(|&x| x <= 0.0) || g_ip.iter().all(|&x| x <= 0.0) {
             return;
         }
@@ -328,9 +458,9 @@ fn sync_streets(h: &Hand, ctx: &mut HandCtx, app: &App, rake: (f64, f64)) {
             if c != 'F' {
                 continue;
             }
-            let Some((k, _)) = app.res.charts.map_key(&codes[..i]) else { continue };
-            if let Some(n) = app.res.charts.nodes.get(&k) {
-                let reach = app.res.charts.range_along(&k, n.player);
+            let Some((k, _)) = charts.map_key(&codes[..i]) else { continue };
+            if let Some(n) = charts.nodes.get(&k) {
+                let reach = charts.range_along(&k, n.player);
                 if let Some(fi) = n.actions.iter().position(|a| a == "F") {
                     let g: Vec<f32> = (0..NUM_CLASSES).map(|h| reach[h] * n.freq[fi][h]).collect();
                     folds.push(engine::Range::from_grid(&g));
@@ -352,6 +482,18 @@ fn sync_streets(h: &Hand, ctx: &mut HandCtx, app: &App, rake: (f64, f64)) {
             }
         }
     }
+}
+
+/// Effective stack of each seat at the start of the hand: its stack against the deepest other
+/// player dealt in.
+fn effective_stacks(h: &Hand) -> Vec<i64> {
+    let n = h.seats.len();
+    (0..n)
+        .map(|i| {
+            let deepest = (0..n).filter(|&j| j != i && h.seats[j].in_hand).map(|j| h.seats[j].starting_stack).max().unwrap_or(0);
+            h.seats[i].starting_stack.min(deepest)
+        })
+        .collect()
 }
 
 fn seat_names(profiles: &[Option<Profile>], spectate: bool) -> Vec<SeatInfo> {
@@ -383,7 +525,8 @@ async fn run_table(app: App, cfg: SessionConfig, session_id: i64, mut rx: mpsc::
         profiles[i] = res.profile(&id).or_else(|| res.profile("gto"));
     }
     let seats = seat_names(&profiles, spectate);
-    let mut ctl = Controls { paused: false, delay: cfg.bot_delay_ms, coach: cfg.coach_mode.clone() };
+    let mut ctl = Controls { paused: false, delay: cfg.bot_delay_ms, coach: cfg.coach_mode.clone(), deal_pause: cfg.deal_pause_ms, pending_topup: false, pending_rebuy: false };
+    let session_mode = cfg.mode == "session" && !spectate && cfg.drill.is_none();
     let table_cfg = TableConfig {
         seats: 6,
         small_blind: 50,
@@ -392,9 +535,35 @@ async fn run_table(app: App, cfg: SessionConfig, session_id: i64, mut rx: mpsc::
         rake: RakeConfig { percent: cfg.rake_pct, cap: (cfg.rake_cap_bb * 100.0).round() as i64, no_flop_no_drop: true },
     };
     let rake = (cfg.rake_pct, cfg.rake_cap_bb * 100.0);
-    let mut stacks = vec![10_000i64; 6];
+    let mut stacks = vec![BUY_IN; 6];
     let mut rng = StdRng::from_entropy();
     let mut button = rng.gen_range(0..6);
+    if session_mode {
+        match app.db.cash_state(session_id) {
+            Some((saved, b, _)) => {
+                stacks = saved;
+                button = b;
+            }
+            None => {
+                for s in 0..6 {
+                    app.db.add_ledger(session_id, s, "buy-in", BUY_IN, 0);
+                }
+                app.db.save_cash_state(session_id, &stacks, button, false);
+            }
+        }
+    }
+    let cash = |app: &App, stack: i64| -> Value {
+        if !session_mode {
+            return json!({"mode": "training"});
+        }
+        let buyins = app.db.buyins(session_id, HERO);
+        let (life_profit, life_buyins) = app.db.lifetime_cash(session_id, stack - buyins);
+        json!({
+            "mode": "session", "session_id": session_id, "bb_dollars": cfg.bb_dollars,
+            "stack": stack, "buyins": buyins, "session_profit": stack - buyins,
+            "lifetime_profit": life_profit, "lifetime_buyins": life_buyins,
+        })
+    };
     let hunter = Arc::new(HunterModel::new());
     let mut hero_net: i64 = 0;
     let mut hands_played: i64 = 0;
@@ -402,21 +571,58 @@ async fn run_table(app: App, cfg: SessionConfig, session_id: i64, mut rx: mpsc::
     let mut exploits_saved = 0usize;
 
     'session: loop {
-        // rebuys: bots always top up to 100bb; the hero per the session setting
-        for s in 0..6 {
-            let hero = s == HERO && !spectate;
-            let mode = if hero { cfg.rebuy.as_str() } else if cfg.rebuy == "reset" { "reset" } else { "topup" };
-            stacks[s] = match mode {
-                "reset" => 10_000,
-                "topup" => stacks[s].max(10_000),
-                _ => if stacks[s] < table_cfg.big_blind { 10_000 } else { stacks[s] },
-            };
+        let hand_no = app.db.next_hand_no();
+        if session_mode {
+            // the hero rebuys or tops up only when asked; bots rebuy when busted and the regs
+            // top up below 100bb
+            if ctl.pending_topup && stacks[HERO] > 0 && stacks[HERO] < BUY_IN {
+                app.db.add_ledger(session_id, HERO, "top-up", BUY_IN - stacks[HERO], hand_no);
+                stacks[HERO] = BUY_IN;
+            }
+            ctl.pending_topup = false;
+            if stacks[HERO] == 0 && !ctl.pending_rebuy {
+                let mut c = cash(&app, 0);
+                c["busted"] = json!(true);
+                push_cash(&app, &latest, c);
+                loop {
+                    match rx.recv().await {
+                        Some(cmd) => {
+                            if let Some(close) = ctl.apply(cmd) {
+                                if close {
+                                    app.db.save_cash_state(session_id, &stacks, button, true);
+                                }
+                                break 'session;
+                            }
+                            if ctl.pending_rebuy {
+                                break;
+                            }
+                        }
+                        None => break 'session,
+                    }
+                }
+            }
+            if stacks[HERO] == 0 && ctl.pending_rebuy {
+                app.db.add_ledger(session_id, HERO, "rebuy", BUY_IN, hand_no);
+                stacks[HERO] = BUY_IN;
+            }
+            ctl.pending_rebuy = false;
+            for s in 1..6 {
+                let tops = profiles[s].as_ref().map(|p| p.top_up).unwrap_or(false);
+                if stacks[s] == 0 {
+                    app.db.add_ledger(session_id, s, "rebuy", BUY_IN, hand_no);
+                    stacks[s] = BUY_IN;
+                } else if tops && stacks[s] < BUY_IN {
+                    app.db.add_ledger(session_id, s, "top-up", BUY_IN - stacks[s], hand_no);
+                    stacks[s] = BUY_IN;
+                }
+            }
+        } else {
+            stacks = vec![BUY_IN; 6];
         }
         if let Some(d) = &cfg.drill {
             button = button_for(pos_index(&d.hero_pos).unwrap_or(3));
             stacks = vec![10_000; 6];
         }
-        let hand_no = app.db.next_hand_no();
         let deck = match &cfg.drill {
             Some(d) => drill_deck(&app, d, &table_cfg, button, &mut rng),
             None => {
@@ -431,7 +637,9 @@ async fn run_table(app: App, cfg: SessionConfig, session_id: i64, mut rx: mpsc::
         let hero_hole = hand.seats[HERO].hole;
         let hand_id = app.db.new_hand(session_id, hand_no, HERO as i64, &hero_pos, &cards_to_string(&hero_hole));
         *hunter.hand_no.lock().unwrap() = hand_no as u64;
-        let mut ctx = HandCtx { hs: None, last_board: 0, decisions: 0, grade_tasks: Vec::new(), bot_log: Vec::new(), thinking: None };
+        let mut ctx = HandCtx { depth_offset: 0, depth_note: None, hs: None, last_board: 0, decisions: 0, grade_tasks: Vec::new(), bot_log: Vec::new(), thinking: None };
+        let eff = effective_stacks(&hand);
+        let seat_charts: Vec<(u32, Arc<strategy::preflop::charts::Charts>)> = eff.iter().map(|&e| res.charts_for(e)).collect();
 
         if let Some(d) = &cfg.drill {
             while hand.street == Street::Preflop && hand.to_act.is_some() {
@@ -451,8 +659,10 @@ async fn run_table(app: App, cfg: SessionConfig, session_id: i64, mut rx: mpsc::
             let c = h.counts.lock().unwrap();
             json!(c.iter().map(|(k, v)| json!({"spot": k, "n": v.n, "fold": v.fold, "call": v.call, "raise": v.raise, "check": v.check, "bet": v.bet})).collect::<Vec<_>>())
         };
+        // buy-ins and profit as of the start of the hand (the seats show the live stack)
+        let cash_now = cash(&app, hand.seats[HERO].starting_stack);
         let extra = |hero_net: i64, hands_played: i64, last_result: &Value| {
-            json!({"session_id": session_id, "hand_id": hand_id, "hand_no": hand_no, "hero_net": hero_net, "hands_played": hands_played, "last_result": last_result, "hunter_read": hunter_read(&hunter)})
+            json!({"session_id": session_id, "hand_id": hand_id, "hand_no": hand_no, "hero_net": hero_net, "hands_played": hands_played, "last_result": last_result, "hunter_read": hunter_read(&hunter), "cash": cash_now, "hero_chart_bb": seat_charts[HERO].0})
         };
 
         while !hand.is_over() {
@@ -478,11 +688,16 @@ async fn run_table(app: App, cfg: SessionConfig, session_id: i64, mut rx: mpsc::
                                 Err(e) => broadcast(&app, &latest, json!({"type": "error", "message": e.to_string()})),
                             }
                         }
-                        Some(TableCmd::Pause(p)) => ctl.paused = p,
-                        Some(TableCmd::SetDelay(ms)) => ctl.delay = ms,
-                        Some(TableCmd::SetCoach(m)) => ctl.coach = m,
-                        Some(TableCmd::NextHand) => {}
-                        Some(TableCmd::Stop) | None => break 'session,
+                        Some(cmd) => {
+                            if let Some(close) = ctl.apply(cmd) {
+                                if session_mode {
+                                    // leaving mid-hand forfeits nothing: the stacks from before the hand are kept
+                                    app.db.save_cash_state(session_id, &stacks, button, close);
+                                }
+                                break 'session;
+                            }
+                        }
+                        None => break 'session,
                     }
                 };
                 if let Some(k) = spot_key(&st, HERO) {
@@ -507,6 +722,11 @@ async fn run_table(app: App, cfg: SessionConfig, session_id: i64, mut rx: mpsc::
                     hand_solve: ctx.hs.clone(),
                     street_solve: ctx.hs.as_ref().map(|h| h.current()),
                     villain,
+                    profiles: profiles.clone(),
+                    charts: seat_charts[HERO].1.clone(),
+                    chart_depth: seat_charts[HERO].0,
+                    eff_bb: eff[HERO] as f64 / 100.0,
+                    depth_note: ctx.depth_note.clone(),
                 };
                 ctx.decisions += 1;
                 let app2 = app.clone();
@@ -540,9 +760,10 @@ async fn run_table(app: App, cfg: SessionConfig, session_id: i64, mut rx: mpsc::
                 let st2 = st.clone();
                 let seed: u64 = rng.gen();
                 let hero_seat = if spectate { None } else { Some(HERO) };
+                let bot_charts = seat_charts[seat].1.clone();
                 let decision = tokio::task::spawn_blocking(move || {
                     let env = BotEnv {
-                        charts: &res2.charts,
+                        charts: &bot_charts,
                         strength: &res2.strength,
                         hand_solve: hs2.as_deref(),
                         hunter: Some(&hunter2),
@@ -561,12 +782,11 @@ async fn run_table(app: App, cfg: SessionConfig, session_id: i64, mut rx: mpsc::
                 let mut wait = ctl.delay.saturating_sub(elapsed);
                 loop {
                     while let Ok(cmd) = rx.try_recv() {
-                        match cmd {
-                            TableCmd::Pause(p) => ctl.paused = p,
-                            TableCmd::SetDelay(ms) => ctl.delay = ms,
-                            TableCmd::SetCoach(m) => ctl.coach = m,
-                            TableCmd::Stop => break 'session,
-                            _ => {}
+                        if let Some(close) = ctl.apply(cmd) {
+                            if session_mode {
+                                app.db.save_cash_state(session_id, &stacks, button, close);
+                            }
+                            break 'session;
                         }
                     }
                     if !ctl.paused && wait == 0 {
@@ -655,33 +875,45 @@ async fn run_table(app: App, cfg: SessionConfig, session_id: i64, mut rx: mpsc::
 
         stacks = hand.stacks();
         button = hand.next_in_hand(button);
+        if session_mode {
+            app.db.save_cash_state(session_id, &stacks, button, false);
+            let mut c = cash(&app, stacks[HERO]);
+            c["busted"] = json!(stacks[HERO] == 0);
+            c["pending_topup"] = json!(false);
+            push_cash(&app, &latest, c);
+        }
 
-        // between hands
-        let wait_for_click = !cfg.auto_deal || ctl.coach == "hand";
+        // between hands: deal again after the pause (Session mode always; Training unless the
+        // coach waits for "next hand")
+        let wait_for_click = !session_mode && (!cfg.auto_deal || ctl.coach == "hand");
         let hero_folded_early = hand.seats[HERO].folded && !spectate;
-        let mut pause_ms = if hero_folded_early { 400 } else { (ctl.delay * 2).max(900) };
+        let pause_ms = if hero_folded_early { ctl.deal_pause.min(600) } else { ctl.deal_pause };
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(pause_ms);
         loop {
             let cmd = if wait_for_click || ctl.paused {
                 rx.recv().await
             } else {
-                match tokio::time::timeout(Duration::from_millis(pause_ms), rx.recv()).await {
+                match tokio::time::timeout_at(deadline, rx.recv()).await {
                     Ok(c) => c,
                     Err(_) => break,
                 }
             };
             match cmd {
                 Some(TableCmd::NextHand) => break,
-                Some(TableCmd::Pause(p)) => {
-                    ctl.paused = p;
-                    pause_ms = 300;
+                Some(cmd) => {
+                    let money = matches!(cmd, TableCmd::TopUp | TableCmd::Rebuy);
+                    if let Some(close) = ctl.apply(cmd) {
+                        if session_mode {
+                            app.db.save_cash_state(session_id, &stacks, button, close);
+                        }
+                        break 'session;
+                    }
+                    if session_mode && money {
+                        // show a requested top-up or rebuy right away
+                        push_cash(&app, &latest, json!({"pending_topup": ctl.pending_topup, "busted": stacks[HERO] == 0 && !ctl.pending_rebuy}));
+                    }
                 }
-                Some(TableCmd::SetDelay(ms)) => ctl.delay = ms,
-                Some(TableCmd::SetCoach(m)) => ctl.coach = m,
-                Some(TableCmd::Action(_)) => {}
-                Some(TableCmd::Stop) | None => break 'session,
-            }
-            if !wait_for_click && !ctl.paused {
-                continue;
+                None => break 'session,
             }
         }
     }
@@ -736,4 +968,26 @@ pub fn spawn_explanation(app: App, g: Value, push: bool) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod depth_tests {
+    use super::*;
+
+    #[test]
+    fn depth_buckets() {
+        assert_eq!(depth_bucket(10_000), BUY_IN);
+        assert_eq!(depth_bucket(9_000), BUY_IN);
+        assert_eq!(depth_bucket(11_000), BUY_IN);
+        assert_eq!(depth_bucket(8_940), 9_000);
+        assert_eq!(depth_bucket(7_400), 7_000);
+        assert_eq!(depth_bucket(4_400), 4_500);
+        assert_eq!(depth_bucket(2_300), 2_500);
+        assert_eq!(depth_bucket(11_200), 12_000);
+        assert_eq!(depth_bucket(23_000), 24_000);
+        for eff in (2_000..40_000).step_by(37) {
+            let b = depth_bucket(eff) as f64;
+            assert!((b / eff as f64 - 1.0).abs() <= 0.13, "{eff} -> {b}");
+        }
+    }
 }

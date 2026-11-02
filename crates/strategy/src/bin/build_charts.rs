@@ -57,6 +57,7 @@ fn main() -> anyhow::Result<()> {
                 ev_bb: ev,
                 calibration_rounds: rounds,
                 created: format!("unix:{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()),
+                stack_bb: 100.0,
             };
             let charts = Charts::from_solver(&solver, &tree, meta, true);
             charts.save(&data.join("charts.json"))?;
@@ -81,5 +82,5 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn dummy_meta() -> ChartMeta {
-    ChartMeta { source: String::new(), method: String::new(), iterations: 0, br_gain_bb: vec![], ev_bb: vec![], calibration_rounds: 0, created: String::new() }
+    ChartMeta { source: String::new(), method: String::new(), iterations: 0, br_gain_bb: vec![], ev_bb: vec![], calibration_rounds: 0, created: String::new(), stack_bb: 100.0 }
 }

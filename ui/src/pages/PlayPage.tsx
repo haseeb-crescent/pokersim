@@ -1,13 +1,35 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { getJson, postJson, bb } from '../api/client'
-import type { BotProfile, CoachMode, SeatView, TableState } from '../api/types'
+import { getJson, postJson, bb, dollars } from '../api/client'
+import type { BotProfile, CashInfo, CashSummary, CoachMode, SeatView, TableState } from '../api/types'
 import { useTable } from '../api/useTable'
 import { Cards, CardText, PlayingCard } from '../components/PlayingCard'
 import { GradeCard } from '../components/GradeCard'
+import { ResultsGraph } from '../components/ResultsGraph'
 import { Term } from '../components/Term'
 import './play.css'
 
 const DEFAULT_LINEUP = ['gto', 'fish', 'nit', 'lag', 'station']
+type Mode = 'training' | 'session'
+
+function stored<T>(key: string, fallback: T): T {
+  try {
+    const s = localStorage.getItem(key)
+    if (s) return JSON.parse(s) as T
+  } catch {
+    /* ignore */
+  }
+  return fallback
+}
+
+function store(key: string, v: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(v))
+  } catch {
+    /* ignore */
+  }
+}
+
+const signed = (chips: number) => (chips > 0 ? '+' : '') + bb(chips)
 
 function Setup({ onStarted }: { onStarted: () => void }) {
   const [profiles, setProfiles] = useState<BotProfile[]>([])
@@ -22,7 +44,10 @@ function Setup({ onStarted }: { onStarted: () => void }) {
   })
   const [coach, setCoach] = useState<CoachMode>('decision')
   const [delay, setDelay] = useState(700)
-  const [rebuy, setRebuy] = useState<'reset' | 'topup' | 'off'>('reset')
+  const [mode, setMode] = useState<Mode>(() => stored<Mode>('mode', 'training'))
+  const [bbDollars, setBbDollars] = useState<number>(() => stored('bb_dollars', 1))
+  const [dealPause, setDealPause] = useState<number>(() => stored('deal_pause_ms', 1500))
+  const [cash, setCash] = useState<CashSummary | null>(null)
   const [rake, setRake] = useState(5)
   const [cap, setCap] = useState(3)
   const [spectate, setSpectate] = useState(false)
@@ -30,37 +55,97 @@ function Setup({ onStarted }: { onStarted: () => void }) {
 
   useEffect(() => {
     getJson<BotProfile[]>('/api/profiles').then(setProfiles).catch((e) => setErr(String(e)))
+    getJson<CashSummary>('/api/cash/summary').then(setCash).catch(() => setCash(null))
   }, [])
 
-  const start = async () => {
-    try {
-      localStorage.setItem('lineup', JSON.stringify(lineup))
-    } catch {
-      /* ignore */
-    }
+  const open = cash?.open ?? null
+  const start = async (resume: number | null = null) => {
+    store('lineup', lineup)
+    store('mode', mode)
+    store('bb_dollars', bbDollars)
+    store('deal_pause_ms', dealPause)
     try {
       await postJson('/api/session/start', {
         lineup,
         coach_mode: coach,
         bot_delay_ms: delay,
-        rebuy,
         rake_pct: rake / 100,
         rake_cap_bb: cap,
         hero_profile: spectate ? 'gto' : null,
+        mode: resume !== null ? 'session' : spectate ? 'training' : mode,
+        deal_pause_ms: dealPause,
+        bb_dollars: bbDollars,
+        resume,
       })
       onStarted()
     } catch (e) {
       setErr(String(e))
     }
   }
+  const cashOut = async (id: number) => {
+    if (!confirm(`Cash out session #${id}? It can no longer be resumed; its result stays in your lifetime totals.`)) return
+    await postJson(`/api/cash/${id}/close`, {})
+    getJson<CashSummary>('/api/cash/summary').then(setCash).catch(() => setCash(null))
+  }
+  const name = (id: string) => profiles.find((p) => p.id === id)?.name ?? id
 
   return (
     <div className="page setup">
       <h1>New session</h1>
       <p className="muted">
-        6-max no-limit hold'em, 100bb. You sit in seat 1; pick the five opponents. Every decision you make is graded against the solver and saved to the logbook.
+        6-max no-limit hold'em, 100bb buy-in. You sit in seat 1; pick the five opponents. Every decision you make is graded against the solver and saved to the logbook.
       </p>
       {err && <p className="pill-bad">{err}</p>}
+      {open && (
+        <div className="panel col resume">
+          <h3>Open session #{open.id}</h3>
+          <p className="muted">
+            Stack {bb(open.stack)} · bought in for {bb(open.buyins)} ·{' '}
+            <b className={open.profit >= 0 ? 'pill-good' : 'pill-bad'}>
+              {signed(open.profit)} ({dollars(open.profit, open.bb_dollars ?? 1, true)})
+            </b>{' '}
+            over {open.hands} hands at ${(open.bb_dollars ?? 1).toFixed(2)}/bb · {(open.lineup ?? []).map(name).join(', ')}
+          </p>
+          <div className="row">
+            <button className="primary" onClick={() => start(open.id)}>
+              Resume session
+            </button>
+            <button onClick={() => cashOut(open.id)}>Cash out</button>
+            <span className="faint small">Resuming keeps this session's lineup, stacks and stakes; the coach and speed settings below apply.</span>
+          </div>
+        </div>
+      )}
+      <div className="panel col">
+        <h3>Mode</h3>
+        <label className="row radio">
+          <input type="radio" checked={mode === 'training'} onChange={() => setMode('training')} />
+          <span>
+            <b>Training</b> <span className="muted small">Every stack resets to 100bb each hand, so every spot matches the 100bb charts and solver library exactly.</span>
+          </span>
+        </label>
+        <label className="row radio">
+          <input type="radio" checked={mode === 'session'} onChange={() => setMode('session')} disabled={spectate} />
+          <span>
+            <b>Session</b>{' '}
+            <span className="muted small">
+              Stacks carry over from hand to hand and across restarts. Buy in for 100bb, rebuy when you bust, top up between hands. Bots rebuy when busted; the GTO and LAG regs (and the Hunter) top up to 100bb, the others let their stacks ride.
+            </span>
+          </span>
+        </label>
+        <div className="row">
+          {mode === 'session' && !spectate && (
+            <label>
+              Big blind ($)
+              <input type="number" min={0.01} step={0.01} value={bbDollars} onChange={(e) => setBbDollars(Math.max(0.01, +e.target.value))} style={{ width: 80 }} />
+            </label>
+          )}
+          <label>
+            Pause between hands: {(dealPause / 1000).toFixed(1)} s
+            <input type="range" min={300} max={6000} step={100} value={dealPause} onChange={(e) => setDealPause(+e.target.value)} />
+          </label>
+        </div>
+        {mode === 'session' && open && !spectate && <p className="faint small">Starting a new Session-mode session cashes out session #{open.id}.</p>}
+      </div>
       <div className="panel col">
         <h3>Lineup</h3>
         {lineup.map((id, i) => {
@@ -96,14 +181,6 @@ function Setup({ onStarted }: { onStarted: () => void }) {
         </div>
         <div className="panel col">
           <h3>Table</h3>
-          <label>
-            Rebuy
-            <select value={rebuy} onChange={(e) => setRebuy(e.target.value as typeof rebuy)}>
-              <option value="reset">Reset to 100bb every hand (charts and cache match exactly)</option>
-              <option value="topup">Top up to 100bb when below</option>
-              <option value="off">No top-up (rebuy only when busted)</option>
-            </select>
-          </label>
           <div className="row">
             <label>
               <Term id="rake">Rake</Term> %
@@ -116,14 +193,14 @@ function Setup({ onStarted }: { onStarted: () => void }) {
           </div>
           <label className="row radio">
             <input type="checkbox" checked={spectate} onChange={(e) => setSpectate(e.target.checked)} />
-            Bot-vs-bot: a GTO bot plays seat 1 and you watch
+            Bot-vs-bot: a GTO bot plays seat 1 and you watch (Training mode)
           </label>
           <p className="faint small">The preflop charts and the solver caches assume 5% rake capped at 3bb.</p>
         </div>
       </div>
       <div className="row">
-        <button className="primary" onClick={start} disabled={lineup.length !== 5}>
-          Start session
+        <button className="primary" onClick={() => start()} disabled={lineup.length !== 5}>
+          Start {spectate ? 'bot-vs-bot' : mode === 'session' ? 'Session' : 'Training'}
         </button>
       </div>
     </div>
@@ -254,6 +331,55 @@ function ActionBar({ t, send }: { t: TableState; send: ReturnType<typeof useTabl
   )
 }
 
+/** Session mode: buy-ins, profit in bb and dollars, top-up and rebuy. */
+function CashBar({ c, liveStack, send }: { c: CashInfo; liveStack: number; send: ReturnType<typeof useTable>['send'] }) {
+  const rate = c.bb_dollars ?? 1
+  const profit = c.session_profit ?? 0
+  const life = c.lifetime_profit ?? 0
+  const canTopUp = !c.busted && liveStack > 0 && (c.stack ?? liveStack) < 10_000
+  return (
+    <div className="cash-bar row">
+      <span>
+        Bought in <b>{bb(c.buyins ?? 0)}</b>
+      </span>
+      <span>
+        Session{' '}
+        <b className={profit >= 0 ? 'pill-good' : 'pill-bad'}>
+          {signed(profit)} ({dollars(profit, rate, true)})
+        </b>
+      </span>
+      <span>
+        Lifetime{' '}
+        <b className={life >= 0 ? 'pill-good' : 'pill-bad'}>
+          {signed(life)} ({dollars(life, rate, true)})
+        </b>
+      </span>
+      <span className="faint small">${rate.toFixed(2)}/bb</span>
+      <span className="grow" />
+      {canTopUp && (
+        <button onClick={() => send({ type: 'top_up' })} disabled={c.pending_topup} title="Adds chips up to 100bb before the next hand">
+          {c.pending_topup ? 'Top-up before next hand' : `Top up to 100bb (+${bb(10_000 - (c.stack ?? liveStack))})`}
+        </button>
+      )}
+    </div>
+  )
+}
+
+/** Session mode: this session's results graph, refreshed after every hand. */
+function SessionResults({ sessionId, handId, rate }: { sessionId: number; handId: number | null; rate: number }) {
+  const [pts, setPts] = useState<{ hand: number; net: number; adj: number }[]>([])
+  useEffect(() => {
+    getJson<CashSummary>(`/api/cash/summary?session=${sessionId}`)
+      .then((c) => setPts(c.graph.map((p) => ({ hand: p.i, net: p.net / 100, adj: p.ev / 100 }))))
+      .catch(() => setPts([]))
+  }, [sessionId, handId])
+  return (
+    <div className="panel results">
+      <ResultsGraph pts={pts} height={150} bbDollars={rate} empty="The results graph appears after two hands." />
+    </div>
+  )
+}
+
 export default function PlayPage() {
   const { state: t, grades, lastHand, error, connected, send } = useTable()
   const [showSetup, setShowSetup] = useState(false)
@@ -274,8 +400,11 @@ export default function PlayPage() {
     return <Setup onStarted={() => setShowSetup(false)} />
   }
   const heroTurn = t.legal !== null && t.to_act === t.hero_seat
-  const stop = async () => {
-    await postJson('/api/session/stop', {})
+  const cash = t.cash?.mode === 'session' ? t.cash : null
+  const hero = t.seats[t.hero_seat]
+  const stop = async (close = false) => {
+    if (close && !confirm('Cash out this session? It can no longer be resumed; its result stays in your lifetime totals.')) return
+    await postJson('/api/session/stop', { close })
     setShowSetup(true)
   }
   return (
@@ -283,13 +412,21 @@ export default function PlayPage() {
       <div className="play-main">
         <div className="toolbar row">
           <span className="muted">
-            Hand #{t.hand_no} · {t.hands_played} played · session{' '}
-            <b className={t.hero_net >= 0 ? 'pill-good' : 'pill-bad'}>
-              {t.hero_net >= 0 ? '+' : ''}
-              {bb(t.hero_net)}
-            </b>
+            {cash ? 'Session' : 'Training'} · Hand #{t.hand_no} · {t.hands_played} played
+            {!cash && (
+              <>
+                {' '}
+                · net{' '}
+                <b className={t.hero_net >= 0 ? 'pill-good' : 'pill-bad'}>{signed(t.hero_net)}</b>
+              </>
+            )}
+            {t.hero_chart_bb && t.hero_chart_bb !== 100 ? <span className="faint small"> · {t.hero_chart_bb}bb charts</span> : null}
           </span>
           <span className="grow" />
+          <label className="row small" title="Pause between hands">
+            Deal {((t.deal_pause_ms ?? 1500) / 1000).toFixed(1)}s
+            <input type="range" min={300} max={6000} step={100} value={t.deal_pause_ms ?? 1500} onChange={(e) => send({ type: 'set_deal_pause', ms: +e.target.value })} />
+          </label>
           <label className="row small">
             Speed
             <input type="range" min={0} max={2500} step={50} value={t.bot_delay_ms} onChange={(e) => send({ type: 'set_delay', ms: +e.target.value })} />
@@ -305,10 +442,22 @@ export default function PlayPage() {
           <button onClick={() => send({ type: 'next_hand' })}>
             Next hand <span className="kbd">N</span>
           </button>
-          <button className="ghost" onClick={stop}>
-            End session
-          </button>
+          {cash ? (
+            <>
+              <button className="ghost" onClick={() => stop(false)} title="Stacks are saved; resume from the setup screen">
+                Leave
+              </button>
+              <button className="ghost" onClick={() => stop(true)}>
+                Cash out
+              </button>
+            </>
+          ) : (
+            <button className="ghost" onClick={() => stop(false)}>
+              End session
+            </button>
+          )}
         </div>
+        {cash && <CashBar c={cash} liveStack={(hero?.stack ?? 0) + (hero?.committed ?? 0)} send={send} />}
         <div className="felt-wrap">
           <div className="felt">
             <div className="board">
@@ -334,6 +483,13 @@ export default function PlayPage() {
         {error && <div className="toast pill-bad">{error}</div>}
         {heroTurn ? (
           <ActionBar t={t} send={send} />
+        ) : cash?.busted ? (
+          <div className="action-bar idle">
+            <span>You're out of chips.</span>
+            <button className="primary" onClick={() => send({ type: 'rebuy' })}>
+              Rebuy for 100bb{cash.bb_dollars ? ` (${dollars(10_000, cash.bb_dollars)})` : ''}
+            </button>
+          </div>
         ) : (
           <div className="action-bar idle muted">
             {t.street === 'showdown' && lastHand ? (
@@ -345,7 +501,7 @@ export default function PlayPage() {
                     · {t.seats[s.seat]?.name}: <CardText text={s.cards.join('')} /> {s.description}
                   </span>
                 ))}
-                <span className="faint"> — press N for the next hand</span>
+                <span className="faint">{cash && !t.paused ? ' — next hand shortly (N deals now)' : t.paused ? ' — paused (P to resume)' : ' — press N for the next hand'}</span>
               </span>
             ) : (
               <span>Waiting for {t.to_act !== null ? t.seats[t.to_act]?.name : '…'}</span>
@@ -359,6 +515,7 @@ export default function PlayPage() {
             </div>
           ))}
         </div>
+        {cash?.session_id && <SessionResults sessionId={cash.session_id} handId={t.last_result?.hand_id ?? null} rate={cash.bb_dollars ?? 1} />}
         <div className="faint small shortcuts">
           Keys: <span className="kbd">F</span> fold · <span className="kbd">C</span>/<span className="kbd">Space</span> check/call · <span className="kbd">1</span>–<span className="kbd">5</span> bet sizes · <span className="kbd">R</span> custom size then <span className="kbd">Enter</span> · <span className="kbd">A</span> all-in · <span className="kbd">N</span> next hand · <span className="kbd">P</span> pause
         </div>

@@ -79,10 +79,12 @@ struct St {
     callers_of_open: u8,
     raisers: Vec<usize>,
     seq: Vec<char>,
+    /// starting stack of every player, chips
+    stack: i32,
 }
 
 impl St {
-    fn root() -> St {
+    fn root(stack: i32) -> St {
         let mut contrib = [0; NP];
         contrib[SB] = 50;
         contrib[BB] = 100;
@@ -98,11 +100,12 @@ impl St {
             callers_of_open: 0,
             raisers: vec![],
             seq: vec![],
+            stack,
         }
     }
 
     fn all_in(&self, p: usize) -> bool {
-        self.contrib[p] >= STACK
+        self.contrib[p] >= self.stack
     }
 
     fn needs_action(&self, p: usize) -> bool {
@@ -152,11 +155,14 @@ fn raise_to(st: &St, p: usize) -> i32 {
             let m = if ip(p, three_bettor) { 2.25 } else { 2.5 };
             (st.three_size as f64 * m).round() as i32
         }
-        _ => STACK,
+        // 5-bet and beyond: all-in up to 100bb (the original abstraction); deeper, 2.3x when that
+        // still leaves real stack behind
+        _ if st.stack <= STACK => st.stack,
+        _ => (st.bet as f64 * 2.3).round() as i32,
     };
     let r = (r / 5) * 5;
-    if r as f64 >= 0.42 * STACK as f64 {
-        STACK
+    if r as f64 >= 0.42 * st.stack as f64 {
+        st.stack
     } else {
         r
     }
@@ -164,12 +170,20 @@ fn raise_to(st: &St, p: usize) -> i32 {
 
 pub struct Tree {
     pub nodes: Vec<Node>,
+    /// starting stack of every player, chips
+    pub stack: i32,
 }
 
 impl Tree {
+    /// The 100bb game.
     pub fn build() -> Tree {
-        let mut t = Tree { nodes: Vec::new() };
-        t.build_rec(St::root(), 0);
+        Self::build_with_stack(STACK)
+    }
+
+    /// The game at another stack depth (chips, 1bb = 100).
+    pub fn build_with_stack(stack: i32) -> Tree {
+        let mut t = Tree { nodes: Vec::new(), stack };
+        t.build_rec(St::root(stack), 0);
         t
     }
 
@@ -222,9 +236,9 @@ impl Tree {
             actions.push(PfAction::Check);
         }
         let others_can_respond = (0..NP).any(|q| q != p && !st.folded[q] && !st.all_in(q));
-        if st.level < 4 && others_can_respond {
+        if st.level < 5 && st.bet < st.stack && others_can_respond {
             let to = raise_to(&st, p);
-            if to >= STACK {
+            if to >= st.stack {
                 actions.push(PfAction::AllIn);
             } else {
                 actions.push(PfAction::Raise(to));
@@ -240,14 +254,14 @@ impl Tree {
                 PfAction::Fold => s.folded[p] = true,
                 PfAction::Check => {}
                 PfAction::Call => {
-                    s.contrib[p] = s.bet.min(STACK);
+                    s.contrib[p] = s.bet.min(s.stack);
                     s.voluntary[p] = true;
                     if s.level == 1 {
                         s.callers_of_open += 1;
                     }
                 }
                 PfAction::Raise(_) | PfAction::AllIn => {
-                    let to = if let PfAction::Raise(x) = a { x } else { STACK };
+                    let to = if let PfAction::Raise(x) = a { x } else { s.stack };
                     s.contrib[p] = to;
                     s.bet = to;
                     s.voluntary[p] = true;

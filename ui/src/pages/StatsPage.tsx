@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
-import { getJson } from '../api/client'
+import { bb, dollars, getJson } from '../api/client'
+import type { CashSummary } from '../api/types'
+import { ResultsGraph } from '../components/ResultsGraph'
 import { Term } from '../components/Term'
 
 export interface StatBlock {
@@ -79,37 +81,72 @@ export function StatHeader({ first }: { first: string }) {
   )
 }
 
-function Graph({ pts }: { pts: StatsResp['graph'] }) {
-  if (pts.length < 2) return <p className="faint">Play some hands to see the graph.</p>
-  const W = 900
-  const H = 220
-  const xs = pts.map((p) => p.hand)
-  const ys = pts.flatMap((p) => [p.net, p.adj])
-  const x0 = Math.min(...xs)
-  const x1 = Math.max(...xs)
-  const y0 = Math.min(0, ...ys)
-  const y1 = Math.max(0, ...ys)
-  const X = (x: number) => ((x - x0) / Math.max(1, x1 - x0)) * (W - 40) + 30
-  const Y = (y: number) => H - 20 - ((y - y0) / Math.max(1e-9, y1 - y0)) * (H - 40)
-  const path = (k: 'net' | 'adj') => pts.map((p, i) => `${i ? 'L' : 'M'}${X(p.hand).toFixed(1)},${Y(p[k]).toFixed(1)}`).join(' ')
+/** Session mode: lifetime money results across every cash session. */
+function CashResults() {
+  const [c, setC] = useState<CashSummary | null>(null)
+  useEffect(() => {
+    getJson<CashSummary>('/api/cash/summary').then(setC).catch(() => setC(null))
+  }, [])
+  if (!c || c.sessions.length === 0) return null
+  // dollars per session at that session's stakes
+  const lifeDollars = c.sessions.reduce((a, x) => a + x.profit * (x.bb_dollars ?? 1), 0)
+  const pts = c.graph.map((p) => ({ hand: p.i, net: p.net / 100, adj: p.ev / 100 }))
+  const L = c.lifetime
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', maxWidth: W }}>
-      <line x1={30} x2={W - 10} y1={Y(0)} y2={Y(0)} stroke="var(--border)" />
-      <path d={path('adj')} fill="none" stroke="var(--warn)" strokeWidth={1.5} strokeDasharray="4 3" />
-      <path d={path('net')} fill="none" stroke="var(--accent)" strokeWidth={2} />
-      <text x={34} y={14} fill="var(--text-2)" fontSize={11}>
-        {y1.toFixed(0)}bb
-      </text>
-      <text x={34} y={H - 6} fill="var(--text-2)" fontSize={11}>
-        {y0.toFixed(0)}bb · {x1} hands
-      </text>
-      <text x={W - 220} y={14} fill="var(--accent)" fontSize={11}>
-        — net won
-      </text>
-      <text x={W - 130} y={14} fill="var(--warn)" fontSize={11}>
-        - - all-in adjusted
-      </text>
-    </svg>
+    <div className="panel col">
+      <h3>Session mode results</h3>
+      <div className="row">
+        <span>
+          Lifetime{' '}
+          <b className={L.profit >= 0 ? 'pill-good' : 'pill-bad'}>
+            {L.profit >= 0 ? '+' : ''}
+            {bb(L.profit)} ({dollars(lifeDollars, 1, true)})
+          </b>{' '}
+          over {L.hands} hands in {L.sessions} session{L.sessions === 1 ? '' : 's'} · bought in for {bb(L.buyins)} · all-in adjusted {L.ev_profit >= 0 ? '+' : ''}
+          {bb(Math.round(L.ev_profit))}
+        </span>
+      </div>
+      <ResultsGraph pts={pts} />
+      <table>
+        <thead>
+          <tr>
+            <th>Session</th>
+            <th>Started</th>
+            <th>Hands</th>
+            <th>Stakes</th>
+            <th>Bought in</th>
+            <th>Stack</th>
+            <th>Profit</th>
+            <th>All-in adj.</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {c.sessions.map((x) => (
+            <tr key={x.id}>
+              <td>#{x.id}</td>
+              <td>{new Date(x.started_at * 1000).toLocaleString()}</td>
+              <td>{x.hands}</td>
+              <td>${(x.bb_dollars ?? 1).toFixed(2)}/bb</td>
+              <td>{bb(x.buyins)}</td>
+              <td>{bb(x.stack)}</td>
+              <td className={x.profit >= 0 ? 'pill-good' : 'pill-bad'}>
+                {x.profit >= 0 ? '+' : ''}
+                {bb(x.profit)} ({dollars(x.profit, x.bb_dollars ?? 1, true)})
+              </td>
+              <td>
+                {x.ev_profit >= 0 ? '+' : ''}
+                {bb(Math.round(x.ev_profit))}
+              </td>
+              <td className="faint small">{x.closed ? 'cashed out' : c.running === x.id ? 'playing' : 'open'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="faint small">
+        Profit is the hero's stack minus buy-ins (rebuys and top-ups included). Dollars use each session's stakes. The all-in adjusted line replaces all-in runouts by your equity at the moment of the all-in.
+      </p>
+    </div>
   )
 }
 
@@ -125,7 +162,7 @@ export default function StatsPage() {
     <div className="page col">
       <h1>Stats</h1>
       <div className="panel">
-        <Graph pts={s.graph} />
+        <ResultsGraph pts={s.graph} />
       </div>
       <div className="panel">
         <table>
@@ -139,6 +176,7 @@ export default function StatsPage() {
         </table>
         <p className="faint small">Percentages are of opportunities (e.g. fold to 3-bet: times you opened and faced a 3-bet). All-in adjusted bb/100 replaces all-in runouts by your equity at the moment of the all-in.</p>
       </div>
+      <CashResults />
       <div className="panel">
         <h3>Opponents (from hands you played)</h3>
         <table>

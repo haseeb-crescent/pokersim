@@ -36,6 +36,7 @@ Rules:
 - If off_chart is present, the student's action is not in the preflop chart at all: say what the chart does with this hand instead, and that the rest of the hand has no solver grades.
 - If kind is \"unsolved\", give the reason from unsolved_reason in a few words, then reason only from pot odds and the equity against estimated ranges.
 - If kind is \"preflop_chart\", the charts carry no EVs: talk about frequencies, not EV.
+- If kind is \"heuristic\", say this is an off-chart heuristic grade, not a solver or chart result: an earlier action left the chart tree (heuristic.reason), so the options were compared with a one-step model against the opponents' actual ranges (heuristic.ranges). Mention the sizing guidance if present.
 - If an exploit view is present, add one sentence on how to adjust against that opponent type.
 - Plain prose only: no headings, no bullet points, no preamble, no sign-off.
 - You have no tools. Answer from the fact sheet only.";
@@ -366,7 +367,7 @@ pub fn explain_payload(g: &Value) -> Value {
         "kind": g.get("kind"),
         "hero_hand": g.get("hero_hand"),
         "board": g.get("board"),
-        "solver_actions_for_this_hand": actions_for_llm(g.get("actions")),
+        "options_for_this_hand": actions_for_llm(g.get("actions")),
         "student_chose": g.get("chosen"),
         "student_choice_frequency": pct(g.get("chosen_freq")),
         "solver_best": g.get("best"),
@@ -375,6 +376,7 @@ pub fn explain_payload(g: &Value) -> Value {
         "note": g.get("note"),
         "off_chart": g.get("off_chart"),
         "unsolved_reason": g.get("unsolved_reason"),
+        "heuristic": g.get("heuristic"),
         "facts": facts_for_llm(g.get("facts").unwrap_or(&Value::Null)),
         "exploit": exploit,
     })
