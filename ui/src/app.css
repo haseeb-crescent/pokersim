@@ -5,9 +5,14 @@
 .nav-link { color: var(--text-2); padding: 8px 10px; border-radius: var(--radius-sm); font-weight: 500; }
 .nav-link:hover { background: var(--panel); color: var(--text); text-decoration: none; }
 .nav-link.active { background: var(--accent-soft); color: var(--accent); }
-.main { flex: 1; overflow: auto; }
+.main { flex: 1; overflow: auto; min-width: 0; }
+@media (max-width: 1280px) and (min-width: 701px) {
+  .sidebar { width: 136px; padding: 14px 8px; }
+  .brand { padding: 4px 6px 14px; white-space: nowrap; font-size: 13px; }
+}
 @media (max-width: 700px) {
   .shell { flex-direction: column; }
-  .sidebar { width: 100%; flex-direction: row; overflow-x: auto; padding: 8px; border-right: 0; border-bottom: 1px solid var(--border); }
+  .sidebar { width: 100%; flex-direction: row; overflow-x: auto; padding: 6px 8px; border-right: 0; border-bottom: 1px solid var(--border); scrollbar-width: none; }
   .brand { display: none; }
+  .nav-link { padding: 6px 8px; font-size: 13px; white-space: nowrap; flex-shrink: 0; }
 }

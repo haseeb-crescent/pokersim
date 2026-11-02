@@ -207,40 +207,69 @@ function Setup({ onStarted }: { onStarted: () => void }) {
   )
 }
 
-// seat positions around the oval, hero (seat 0) bottom centre, clockwise
-const SEAT_POS = [
-  { left: '50%', top: '93%' },
-  { left: '9%', top: '74%' },
-  { left: '9%', top: '24%' },
-  { left: '50%', top: '5%' },
-  { left: '91%', top: '24%' },
-  { left: '91%', top: '74%' },
-]
-const BET_POS = [
-  { left: '50%', top: '72%' },
-  { left: '27%', top: '64%' },
-  { left: '27%', top: '35%' },
-  { left: '62%', top: '27%' },
-  { left: '73%', top: '35%' },
-  { left: '73%', top: '64%' },
-]
+// Seats sit around the oval by their position relative to the hero (s0 = hero, bottom centre,
+// then clockwise); the coordinates live in play.css so they can change with the table's width.
+const SHORT: Record<string, string> = { gto: 'GTO Reg', lag: 'LAG Reg', fish: 'Fish', station: 'Station', nit: 'Nit', maniac: 'Maniac', hunter: 'Hunter' }
+
+function shortName(s: SeatView): string {
+  const base = SHORT[s.profile]
+  if (!base) return s.name
+  const n = s.name.match(/ (\d+)$/)
+  return n ? `${base} ${n[1]}` : base
+}
 
 function Seat({ s, isButton, toAct, heroSeat }: { s: SeatView; isButton: boolean; toAct: boolean; heroSeat: number }) {
-  const pos = SEAT_POS[(s.seat - heroSeat + 6) % 6]
+  const rel = (s.seat - heroSeat + 6) % 6
   return (
-    <div className={'seat' + (s.folded ? ' folded' : '') + (toAct ? ' to-act' : '')} style={pos}>
+    <div className={`seat s${rel}` + (s.folded ? ' folded' : '') + (toAct ? ' to-act' : '')}>
       <div className="seat-cards">
         {s.cards ? <Cards cards={s.cards} size="md" /> : s.in_hand && !s.folded ? <><PlayingCard card={null} /><PlayingCard card={null} /></> : null}
       </div>
       <div className="seat-box">
-        <div className="seat-name">
-          <span className="pos">{s.position}</span> {s.name}
+        <div className="seat-name" title={s.name}>
+          <span className="pos">{s.position}</span> <span className="name-long">{s.name}</span>
+          <span className="name-short">{shortName(s)}</span>
           {isButton && <span className="dealer">D</span>}
         </div>
         <div className="seat-stack">{bb(s.stack)}{s.all_in && <span className="allin"> all-in</span>}</div>
         {s.thinking ? <div className="seat-act thinking">{s.thinking}</div> : s.last_action && <div className="seat-act">{s.last_action}</div>}
       </div>
     </div>
+  )
+}
+
+/** Bot speed, pause between hands and coach mode, tucked into a popover so the toolbar is one row. */
+function TableSettings({ t, send }: { t: TableState; send: ReturnType<typeof useTable>['send'] }) {
+  const ref = useRef<HTMLDetailsElement>(null)
+  useEffect(() => {
+    const close = (e: MouseEvent) => {
+      if (ref.current?.open && !ref.current.contains(e.target as Node)) ref.current.open = false
+    }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [])
+  return (
+    <details className="table-settings" ref={ref}>
+      <summary className="btn">Settings</summary>
+      <div className="settings-panel col">
+        <label className="col">
+          Coach
+          <select value={t.coach_mode} onChange={(e) => send({ type: 'set_coach', mode: e.target.value as CoachMode })}>
+            <option value="decision">Grade each decision</option>
+            <option value="hand">Grade each hand</option>
+            <option value="off">Coach off</option>
+          </select>
+        </label>
+        <label className="col">
+          Bot speed: {t.bot_delay_ms} ms per action
+          <input type="range" min={0} max={2500} step={50} value={t.bot_delay_ms} onChange={(e) => send({ type: 'set_delay', ms: +e.target.value })} />
+        </label>
+        <label className="col">
+          Pause between hands: {((t.deal_pause_ms ?? 1500) / 1000).toFixed(1)} s
+          <input type="range" min={300} max={6000} step={100} value={t.deal_pause_ms ?? 1500} onChange={(e) => send({ type: 'set_deal_pause', ms: +e.target.value })} />
+        </label>
+      </div>
+    </details>
   )
 }
 
@@ -411,7 +440,7 @@ export default function PlayPage() {
     <div className="play">
       <div className="play-main">
         <div className="toolbar row">
-          <span className="muted">
+          <span className="muted status">
             {cash ? 'Session' : 'Training'} · Hand #{t.hand_no} · {t.hands_played} played
             {!cash && (
               <>
@@ -423,25 +452,13 @@ export default function PlayPage() {
             {t.hero_chart_bb && t.hero_chart_bb !== 100 ? <span className="faint small"> · {t.hero_chart_bb}bb charts</span> : null}
           </span>
           <span className="grow" />
-          <label className="row small" title="Pause between hands">
-            Deal {((t.deal_pause_ms ?? 1500) / 1000).toFixed(1)}s
-            <input type="range" min={300} max={6000} step={100} value={t.deal_pause_ms ?? 1500} onChange={(e) => send({ type: 'set_deal_pause', ms: +e.target.value })} />
-          </label>
-          <label className="row small">
-            Speed
-            <input type="range" min={0} max={2500} step={50} value={t.bot_delay_ms} onChange={(e) => send({ type: 'set_delay', ms: +e.target.value })} />
-          </label>
-          <select value={t.coach_mode} onChange={(e) => send({ type: 'set_coach', mode: e.target.value as CoachMode })}>
-            <option value="decision">Grade each decision</option>
-            <option value="hand">Grade each hand</option>
-            <option value="off">Coach off</option>
-          </select>
           <button onClick={() => send({ type: 'pause', paused: !t.paused })}>
             {t.paused ? 'Resume' : 'Pause'} <span className="kbd">P</span>
           </button>
           <button onClick={() => send({ type: 'next_hand' })}>
             Next hand <span className="kbd">N</span>
           </button>
+          <TableSettings t={t} send={send} />
           {cash ? (
             <>
               <button className="ghost" onClick={() => stop(false)} title="Stacks are saved; resume from the setup screen">
@@ -474,7 +491,7 @@ export default function PlayPage() {
             {t.seats
               .filter((s) => s.committed > 0)
               .map((s) => (
-                <div key={'b' + s.seat} className="bet-chip" style={BET_POS[(s.seat - t.hero_seat + 6) % 6]}>
+                <div key={'b' + s.seat} className={`bet-chip b${(s.seat - t.hero_seat + 6) % 6}`}>
                   {bb(s.committed)}
                 </div>
               ))}
