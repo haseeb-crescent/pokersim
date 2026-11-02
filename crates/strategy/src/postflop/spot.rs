@@ -164,6 +164,10 @@ pub struct SpotSpec {
     pub pot: i32,
     /// effective stack behind, chips
     pub stack: i32,
+    /// effective-stack depth bucket the hand is solved at (chips at the start of the hand,
+    /// see `depth_bucket`); part of the cache key
+    #[serde(default = "default_depth")]
+    pub depth: i32,
     pub preset: TreePreset,
     pub rake_pct: f64,
     pub rake_cap: f64,
@@ -257,8 +261,67 @@ impl SpotSpec {
         }
     }
 
-    /// Stable cache key of the spec (already canonical).
+    /// Hash of the exact range weights (f32 bits) of both players: a different chart, or any
+    /// change to a single combo's weight, gives a different hash.
+    pub fn range_hash(&self) -> u64 {
+        let mut h = Fnv::new();
+        for r in &self.ranges {
+            h.write(b"range");
+            for &w in &r.w {
+                // +0.0 and -0.0 are the same weight
+                let bits = if w == 0.0 { 0u32 } else { w.to_bits() };
+                h.write(&bits.to_le_bytes());
+            }
+        }
+        h.finish()
+    }
+
+    /// Stable cache key of the spec (already canonical): the board, the depth bucket, the exact
+    /// ranges (`range_hash`), pot, stack behind, tree, rake, extra lines and node locks.
     pub fn key(&self) -> String {
+        let mut h = Fnv::new();
+        h.write(b"v2");
+        if self.bunching.is_some() {
+            h.write(b"bunching");
+        }
+        h.write(&[self.preset.id()]);
+        h.write(&self.depth.to_le_bytes());
+        h.write(&self.range_hash().to_le_bytes());
+        h.write(&self.pot.to_le_bytes());
+        h.write(&self.stack.to_le_bytes());
+        h.write(&self.rake_pct.to_le_bytes());
+        h.write(&self.rake_cap.to_le_bytes());
+        let mut flop = self.board[..3].to_vec();
+        flop.sort();
+        h.write(&flop);
+        h.write(&self.board[3..]);
+        self.write_lines_and_locks(&mut h);
+        let mut shown = self.board[..3].to_vec();
+        shown.sort();
+        shown.extend_from_slice(&self.board[3..]);
+        format!("{}-{}bb-{:016x}", cards_to_string(&shown), self.depth / 100, h.finish())
+    }
+
+    fn write_lines_and_locks(&self, h: &mut Fnv) {
+        for line in &self.extra_lines {
+            h.write(serde_json::to_string(line).unwrap().as_bytes());
+        }
+        for lock in &self.locks {
+            h.write(b"lock");
+            h.write(serde_json::to_string(&lock.line).unwrap().as_bytes());
+            for (i, &(a, b)) in lock.hands.iter().enumerate() {
+                h.write(&[a, b]);
+                let n = lock.hands.len();
+                for k in 0..lock.strategy.len() / n.max(1) {
+                    h.write(&((lock.strategy[k * n + i] * 1000.0) as i32).to_le_bytes());
+                }
+            }
+        }
+    }
+
+    /// The key format before depth buckets and exact range hashes (quantized weights, no
+    /// depth). Only `presolve --migrate-v1` uses it, to re-key the existing 100bb library.
+    pub fn legacy_key_v1(&self) -> String {
         let mut h = Fnv::new();
         h.write(b"v1");
         if self.bunching.is_some() {
@@ -278,20 +341,7 @@ impl SpotSpec {
                 h.write(&q.to_le_bytes());
             }
         }
-        for line in &self.extra_lines {
-            h.write(serde_json::to_string(line).unwrap().as_bytes());
-        }
-        for lock in &self.locks {
-            h.write(b"lock");
-            h.write(serde_json::to_string(&lock.line).unwrap().as_bytes());
-            for (i, &(a, b)) in lock.hands.iter().enumerate() {
-                h.write(&[a, b]);
-                let n = lock.hands.len();
-                for k in 0..lock.strategy.len() / n.max(1) {
-                    h.write(&((lock.strategy[k * n + i] * 1000.0) as i32).to_le_bytes());
-                }
-            }
-        }
+        self.write_lines_and_locks(&mut h);
         let mut shown = self.board[..3].to_vec();
         shown.sort();
         shown.extend_from_slice(&self.board[3..]);
@@ -346,6 +396,29 @@ impl SpotSpec {
     }
 }
 
+fn default_depth() -> i32 {
+    10_000
+}
+
+/// Stack-depth bucket (chips) a postflop spot is solved at: within 10% of 100bb the 100bb
+/// library; otherwise 5bb steps below 50bb, 10bb steps up to 100bb and 20bb steps above, so
+/// similar depths share solves and the bucket is never more than about 12% from the real stack.
+pub fn depth_bucket(eff: i64) -> i64 {
+    let bb = eff as f64 / 100.0;
+    if (bb - 100.0).abs() <= 10.0 {
+        return 10_000;
+    }
+    let step = if bb < 50.0 {
+        5.0
+    } else if bb < 100.0 {
+        10.0
+    } else {
+        20.0
+    };
+    let b = ((bb / step).round() * step).max(step);
+    (b * 100.0) as i64
+}
+
 pub fn quantize(r: &Range) -> Vec<u16> {
     r.w.iter().map(|&w| (w.clamp(0.0, 1.0) * 10_000.0).round() as u16).collect()
 }
@@ -376,6 +449,7 @@ mod tests {
             ranges: [Range::parse(oop).unwrap(), Range::parse(ip).unwrap()],
             pot: 550,
             stack: 9750,
+            depth: 10_000,
             preset: TreePreset::Flop,
             rake_pct: 0.05,
             rake_cap: 300.0,
@@ -414,6 +488,43 @@ mod tests {
         let c = spec("Ks7c2h", "AhAd", "QQ");
         assert_eq!(key(&a), key(&b));
         assert_ne!(key(&a), key(&c));
+    }
+
+    #[test]
+    fn key_separates_charts_and_depths() {
+        let a = spec("Kh7d2c", "22+,A2s+,KTo+", "22+,ATs+,KQo");
+        assert_eq!(key(&a), key(&a.clone()));
+        assert!(key(&a).contains("-100bb-"), "{}", key(&a));
+        // the same pot and stack behind at another depth bucket is another spot
+        let mut deep = a.clone();
+        deep.depth = 16_000;
+        assert_ne!(key(&a), key(&deep));
+        assert!(key(&deep).contains("-160bb-"));
+        // a chart that differs in one combo by far less than the old 1/10,000 quantization
+        let mut b = a.clone();
+        let i = b.ranges[0].w.iter().position(|&w| w > 0.0).unwrap();
+        b.ranges[0].w[i] -= 1e-6;
+        assert_ne!(a.range_hash(), b.range_hash());
+        assert_ne!(key(&a), key(&b));
+        assert_eq!(quantize(&a.ranges[0]), quantize(&b.ranges[0]), "the old key could not tell these apart");
+        assert_eq!(key(&a).len(), key(&b).len());
+    }
+
+    #[test]
+    fn depth_buckets() {
+        assert_eq!(depth_bucket(10_000), 10_000);
+        assert_eq!(depth_bucket(9_000), 10_000);
+        assert_eq!(depth_bucket(11_000), 10_000);
+        assert_eq!(depth_bucket(8_940), 9_000);
+        assert_eq!(depth_bucket(7_400), 7_000);
+        assert_eq!(depth_bucket(4_400), 4_500);
+        assert_eq!(depth_bucket(2_300), 2_500);
+        assert_eq!(depth_bucket(11_200), 12_000);
+        assert_eq!(depth_bucket(23_000), 24_000);
+        for eff in (2_000..40_000).step_by(37) {
+            let b = depth_bucket(eff) as f64;
+            assert!((b / eff as f64 - 1.0).abs() <= 0.13, "{eff} -> {b}");
+        }
     }
 
     #[test]

@@ -20,7 +20,7 @@ use strategy::bots::view::{positions, PublicState, POS_NAMES};
 use strategy::coach::facts::board_texture;
 use strategy::postflop::grids::grids;
 use strategy::postflop::hand::HandSolve;
-use strategy::postflop::fmt_bb;
+use strategy::postflop::{depth_bucket, fmt_bb};
 use strategy::preflop::game::postflop_rank;
 use tokio::sync::mpsc;
 
@@ -114,25 +114,6 @@ fn d_bb_dollars() -> f64 {
 }
 
 pub const BUY_IN: i64 = 10_000;
-
-/// Postflop stack-depth bucket (chips): within 10% of 100bb the 100bb library; otherwise 5bb
-/// steps below 50bb, 10bb steps up to 100bb and 20bb steps above, so similar depths share solves
-/// and the bucket is never more than about 12% from the real stack.
-pub fn depth_bucket(eff: i64) -> i64 {
-    let bb = eff as f64 / 100.0;
-    if (bb - 100.0).abs() <= 10.0 {
-        return BUY_IN;
-    }
-    let step = if bb < 50.0 {
-        5.0
-    } else if bb < 100.0 {
-        10.0
-    } else {
-        20.0
-    };
-    let b = ((bb / step).round() * step).max(step);
-    (b * 100.0) as i64
-}
 
 struct Controls {
     paused: bool,
@@ -467,7 +448,7 @@ fn sync_streets(h: &Hand, ctx: &mut HandCtx, app: &App, rake: (f64, f64)) {
                 }
             }
         }
-        ctx.hs = Some(Arc::new(HandSolve::start_flop([oop, ip], h.board.clone(), ranges, pot, stack, app.res.cache.clone(), rake, folds)));
+        ctx.hs = Some(Arc::new(HandSolve::start_flop([oop, ip], h.board.clone(), ranges, pot, stack, bucket as i32, app.res.cache.clone(), rake, folds)));
     } else if blen > 3 {
         if let Some(hs) = &ctx.hs {
             let prev = match prev_len {
@@ -968,26 +949,4 @@ pub fn spawn_explanation(app: App, g: Value, push: bool) {
             }
         }
     });
-}
-
-#[cfg(test)]
-mod depth_tests {
-    use super::*;
-
-    #[test]
-    fn depth_buckets() {
-        assert_eq!(depth_bucket(10_000), BUY_IN);
-        assert_eq!(depth_bucket(9_000), BUY_IN);
-        assert_eq!(depth_bucket(11_000), BUY_IN);
-        assert_eq!(depth_bucket(8_940), 9_000);
-        assert_eq!(depth_bucket(7_400), 7_000);
-        assert_eq!(depth_bucket(4_400), 4_500);
-        assert_eq!(depth_bucket(2_300), 2_500);
-        assert_eq!(depth_bucket(11_200), 12_000);
-        assert_eq!(depth_bucket(23_000), 24_000);
-        for eff in (2_000..40_000).step_by(37) {
-            let b = depth_bucket(eff) as f64;
-            assert!((b / eff as f64 - 1.0).abs() <= 0.13, "{eff} -> {b}");
-        }
-    }
 }

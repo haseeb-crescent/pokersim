@@ -569,6 +569,8 @@ async fn postflop_solve(State(app): State<App>, Json(b): Json<SolveBody>) -> R {
         ranges: [oop, ip],
         pot: (b.pot_bb * 100.0).round() as i32,
         stack: (b.stack_bb * 100.0).round() as i32,
+        // a Lab spot starts from its own stack behind plus each player's half of the pot
+        depth: ((b.stack_bb + b.pot_bb / 2.0) * 100.0).round() as i32,
         preset,
         rake_pct: 0.05,
         rake_cap: 300.0,

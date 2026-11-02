@@ -74,8 +74,16 @@ Live behaviour:
 ## 4. Cache and overnight pre-solve
 
 - Finished flop solves are stored with flop-only storage: about 0.1 MB each
-  (`data/cache/solves`). The key is the suit-canonical spot (board, both ranges, pot, stack,
-  tree, rake), so the 22,100 flops collapse to 1,755 and every isomorphic spot is a hit.
+  (`data/cache/solves`). The key is the suit-canonical spot. It covers the board, the
+  effective-stack depth bucket, a hash of the exact range weights of both players (f32 bits, so
+  any chart change, even one combo, is a new key), the pot, the stack behind, the tree and the
+  rake. Files are named like `2c7dKh-100bb-<hash>.bin`. The 22,100 flops collapse to 1,755, and
+  every isomorphic spot is a hit.
+- The key format changed when depth buckets were added. `presolve --migrate-v1` re-keys an
+  existing cache: it recomputes the old and new key of every library spot and renames the
+  matching files. That takes about 30 s, and on the first cache it re-keyed all 102 library
+  flops. Turn and river re-solves and one-off live or Lab spots in the old format are no longer
+  looked up, and are solved again if they come back.
 - `./overnight.sh [hours]` runs `presolve`: every heads-up flop line of the chart tree is
   weighted by how often it happens under the charts, every canonical flop by how often it is
   dealt, and spots are solved in that order with exactly the live specs. It prints the share of
@@ -130,8 +138,9 @@ response. Locked solves are never cached.
 
 ## 8. Stack depths other than 100bb (Session mode)
 
-The postflop spec is the same tree at a different depth: the effective stack goes into the spec,
-and therefore into the cache key.
+The postflop spec is the same tree at a different depth. The depth bucket and the stack behind
+both go into the spec, and therefore into the cache key, so a solve is never served for another
+depth.
 
 - Within 10% of 100bb, the spot is solved at exactly 100bb, so the overnight library and cache
   apply. The coach notes the real effective stack.

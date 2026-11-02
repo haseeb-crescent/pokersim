@@ -104,7 +104,7 @@ pub fn calibrate(solver: &Solver, tree: &Tree, prev: &Realization, flops_per_spo
             let mut rs = ranges.clone();
             rs[0].remove_dead(mask_of(&board));
             rs[1].remove_dead(mask_of(&board));
-            let spec = SpotSpec { board: board.clone(), ranges: rs, pot, stack, preset: TreePreset::Calibration, rake_pct: 0.05, rake_cap: 300.0, extra_lines: vec![], locks: vec![], bunching: None };
+            let spec = SpotSpec { board: board.clone(), ranges: rs, pot, stack, depth: tree.stack, preset: TreePreset::Calibration, rake_pct: 0.05, rake_cap: 300.0, extra_lines: vec![], locks: vec![], bunching: None };
             let t0 = std::time::Instant::now();
             let s = Spot::start(spec, cache.clone(), SolveTargets { target_pct: 2.5, max_secs: 25.0, background: false });
             let st = s.wait_final(std::time::Duration::from_secs(120));

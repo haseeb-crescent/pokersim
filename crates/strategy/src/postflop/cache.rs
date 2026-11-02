@@ -20,6 +20,8 @@ struct Sidecar {
     board: String,
     pot: i32,
     stack: i32,
+    #[serde(default)]
+    depth: i32,
     preset: String,
     combos: [f32; 2],
 }
@@ -76,11 +78,26 @@ impl SolveCache {
             board: engine::card::cards_to_string(&spec.board),
             pot: spec.pot,
             stack: spec.stack,
+            depth: spec.depth,
             preset: format!("{:?}", spec.preset),
             combos: [spec.ranges[0].combos(0), spec.ranges[1].combos(0)],
         };
         std::fs::write(json, serde_json::to_string(&side).unwrap()).map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// Moves an entry to a new key (cache-key format migrations). False when `from` is not
+    /// cached or `to` already is.
+    pub fn rename(&self, from: &str, to: &str) -> bool {
+        if !self.enabled || from == to || !self.contains(from) || self.contains(to) {
+            return false;
+        }
+        let ((fb, fj), (tb, tj)) = (self.paths(from), self.paths(to));
+        if std::fs::create_dir_all(tb.parent().unwrap()).is_err() || std::fs::rename(&fb, &tb).is_err() {
+            return false;
+        }
+        let _ = std::fs::rename(&fj, &tj);
+        true
     }
 
     /// Number of cached solves and their total size on disk.

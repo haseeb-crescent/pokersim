@@ -42,6 +42,8 @@ pub struct HandSolve {
     streets: Mutex<Vec<Arc<StreetSolve>>>,
     cache: Arc<SolveCache>,
     rake: (f64, f64),
+    /// effective-stack depth bucket of the hand (chips), part of every street's cache key
+    depth: i32,
     /// bunching data for river re-solves, computed in the background from the flop on
     bunching: Arc<Mutex<Option<Bunching>>>,
 }
@@ -69,8 +71,11 @@ pub struct SpotChoice {
 
 impl HandSolve {
     /// `fold_ranges`: chart ranges of the players who folded preflop (for bunching).
-    pub fn start_flop(seats: [usize; 2], board: Vec<Card>, ranges: [Range; 2], pot: i32, stack: i32, cache: Arc<SolveCache>, rake: (f64, f64), fold_ranges: Vec<Range>) -> HandSolve {
-        let hs = HandSolve { seats, streets: Mutex::new(Vec::new()), cache, rake, bunching: Arc::new(Mutex::new(None)) };
+    /// `depth` is the effective-stack depth bucket the hand is solved at (chips, see
+    /// `depth_bucket`); `stack` is the stack behind at that depth.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_flop(seats: [usize; 2], board: Vec<Card>, ranges: [Range; 2], pot: i32, stack: i32, depth: i32, cache: Arc<SolveCache>, rake: (f64, f64), fold_ranges: Vec<Range>) -> HandSolve {
+        let hs = HandSolve { seats, streets: Mutex::new(Vec::new()), cache, rake, depth, bunching: Arc::new(Mutex::new(None)) };
         let folds: Vec<Range> = fold_ranges.into_iter().filter(|r| !r.is_empty()).collect();
         if !folds.is_empty() && folds.len() <= MAX_BUNCHING_FOLDERS {
             let slot = hs.bunching.clone();
@@ -116,7 +121,7 @@ impl HandSolve {
         ranges[0].remove_dead(dead);
         ranges[1].remove_dead(dead);
         let bunching = if board.len() == 5 { self.bunching.lock().unwrap().clone() } else { None };
-        SpotSpec { board: board.to_vec(), ranges, pot, stack, preset: Self::preset_for(board.len()), rake_pct: self.rake.0, rake_cap: self.rake.1, extra_lines: extra, locks: vec![], bunching }
+        SpotSpec { board: board.to_vec(), ranges, pot, stack, depth: self.depth, preset: Self::preset_for(board.len()), rake_pct: self.rake.0, rake_cap: self.rake.1, extra_lines: extra, locks: vec![], bunching }
     }
 
     fn push_street(&self, board: Vec<Card>, ranges: [Range; 2], pot: i32, stack: i32) {

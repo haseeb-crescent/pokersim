@@ -10,7 +10,10 @@
 //! divided by the typical solve time of the pot type (wide limped pots are slow, 3-bet pots
 //! fast).
 //!
-//! usage: presolve [--hours H] [--max N] [--min-reach R] [--max-secs S] [--list]
+//! `--migrate-v1` re-keys an existing cache from the old key format (quantized ranges, no
+//! depth bucket) to the current one for every library spot, then exits.
+//!
+//! usage: presolve [--hours H] [--max N] [--min-reach R] [--max-secs S] [--list] [--migrate-v1]
 use engine::card::*;
 use engine::Range;
 use std::collections::HashMap;
@@ -94,8 +97,30 @@ fn main() -> anyhow::Result<()> {
     let charts = Charts::load(&root.join("data/preflop/charts.json"))?;
     let cache = Arc::new(SolveCache::new(root.join("data/cache/solves")));
     let tree = Tree::build();
-    let lines: Vec<_> = lines(&charts, &tree).into_iter().filter(|l| l.1 >= min_reach).collect();
+    let all_lines = lines(&charts, &tree);
     let flops = flops();
+    if args.iter().any(|a| a == "--migrate-v1") {
+        let (mut checked, mut moved) = (0usize, 0usize);
+        for (key, _, pl, pot, stack) in &all_lines {
+            let base = [Range::from_grid(&charts.range_along(key, pl[0])), Range::from_grid(&charts.range_along(key, pl[1]))];
+            for (f, _) in &flops {
+                let board = f.to_vec();
+                let mut ranges = base.clone();
+                ranges[0].remove_dead(mask_of(&board));
+                ranges[1].remove_dead(mask_of(&board));
+                let spec = SpotSpec { board, ranges, pot: *pot, stack: *stack, depth: STACK, preset: TreePreset::Flop, rake_pct: 0.05, rake_cap: 300.0, extra_lines: vec![], locks: vec![], bunching: None };
+                let canon = spec.permuted(spec.canonical_perm());
+                checked += 1;
+                if cache.rename(&canon.legacy_key_v1(), &canon.key()) {
+                    moved += 1;
+                }
+            }
+        }
+        let (n, _) = cache.stats();
+        println!("checked {checked} library spots, re-keyed {moved} cached solves; {n} solves in the cache");
+        return Ok(());
+    }
+    let lines: Vec<_> = all_lines.into_iter().filter(|l| l.1 >= min_reach).collect();
     println!("{} heads-up flop lines with reach >= {min_reach}, {} canonical flops", lines.len(), flops.len());
     for (k, p, pl, pot, stack) in lines.iter().take(15) {
         println!("  {:<22} {:>6.2}%  {} vs {}  pot {}bb  stack {}bb", k, 100.0 * p, POS[pl[0]], POS[pl[1]], *pot as f64 / 100.0, *stack as f64 / 100.0);
@@ -138,7 +163,7 @@ fn main() -> anyhow::Result<()> {
         let mut ranges = base.clone();
         ranges[0].remove_dead(mask_of(&board));
         ranges[1].remove_dead(mask_of(&board));
-        let spec = SpotSpec { board: board.clone(), ranges, pot: *pot, stack: *stack, preset: TreePreset::Flop, rake_pct: 0.05, rake_cap: 300.0, extra_lines: vec![], locks: vec![], bunching: None };
+        let spec = SpotSpec { board: board.clone(), ranges, pot: *pot, stack: *stack, depth: STACK, preset: TreePreset::Flop, rake_pct: 0.05, rake_cap: 300.0, extra_lines: vec![], locks: vec![], bunching: None };
         let k = spec.permuted(spec.canonical_perm()).key();
         covered += mass;
         if cache.contains(&k) {
