@@ -93,8 +93,11 @@ by ratio. The coach notes when a grade used a non-100bb chart.
   calibration (flop value = equity x realization measured at 100bb). So at 150 and 200bb, the
   opening ranges are almost the 100bb ones, and the differences are in 4-bet and 5-bet play.
   `--rounds N` recalibrates realization against postflop-solver at that depth, the same way as
-  the 100bb charts. It is much slower; run it unattended (`--out DIR` writes elsewhere to
-  compare first).
+  the 100bb charts. It is much slower: one round at 40bb with a single flop per spot took 1m48s,
+  so the default 10 flops is roughly 15-20 minutes per depth per round, more for deeper stacks.
+  Run it unattended. `--out DIR` writes elsewhere so you can compare first. In that one-flop test
+  at 40bb, the SB moved from limping to raising (raise 28.7%, limp 21.7%), the direction
+  expected for short stacks; one flop per spot is too noisy to ship.
 
 Measured (3,000 DCFR iterations, M5 Max; best-response gain at most 0.0004bb per position):
 
