@@ -1,9 +1,28 @@
-# pokersim: a solver trainer
+# pokersim
 
-A local 6-max no-limit hold'em trainer. You play unlimited hands against bots with distinct
-personalities. Every decision you make is graded against a solver and explained in plain
-English, then saved and rolled up into stats and a leak report. Everything runs on your own
-machine.
+**A poker trainer that grades your decisions against a game-theory solver.**
+
+You play unlimited hands of 6-max no-limit hold'em against bots with distinct playing styles.
+After each decision, the coach shows what the solver's strategy does in that spot, what your
+choice cost in big blinds, and why, in plain English. Every hand is saved and rolled up into
+stats and a leak report. Everything runs on your own machine.
+
+- **Its own preflop solver.** A 6-max CFR solver (counterfactual regret minimization, the
+  algorithm behind modern poker AI) over all 169 starting-hand classes, calibrated against a
+  postflop solver. A best response gains about 0.0001 big blinds per hand against it in its
+  abstract game. The charts are computed here, not copied from a chart pack.
+- **Live postflop solving.** Each flop is solved on the actual board from both players' ranges;
+  the turn and river are re-solved on the real cards in about 1 s and 0.1 s.
+- **A bot that hunts your leaks.** The Hunter starts as a solver bot and tracks how often you
+  fold, call and bluff in each spot. Once it has enough samples, it locks your tendency into the
+  solver and plays the exact counter-strategy. Every exploit it finds goes into your leak report.
+- **Verified foundations.** The hand evaluator is checked against brute force on all
+  133,784,560 seven-card hands. The table handles side pots, incomplete all-ins, odd chips and
+  rake.
+- **A lab.** Equity calculator, range viewer, spot drills, and a bot-vs-bot simulator that plays
+  about 10,000 hands a second.
+
+Rust for the engine, solvers and server; React for the UI.
 
 ![A hand being played and graded: the preflop call is graded against the chart and explained,
 then the flop bet is graded against a postflop-solver solution with the EV of each action and
